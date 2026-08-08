@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synapse"
+version = "0.1.0"
+description = "A trust-brokered, temporally-aware, partition-encrypted memory substrate for multi-agent systems."
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "neo4j",
+    "redis",
+    "pydantic",
+    "pydantic-settings",
+    "pytest",
+    "pytest-asyncio",
+    "httpx"
+]
