@@ -1,13 +1,29 @@
 """
-Minimal in-memory agent registry (Phase 2).
-To be replaced by TOML config in Phase 3.
+Minimal agent registry.
+Loads from data/agents.json if it exists.
 """
 from typing import Dict, Any
+import json
+import os
 
-_AGENTS = {
+_DEFAULT_AGENTS = {
     "malware-det": {"id": "malware-det", "trust_prior": 0.9, "allowed_scopes": ["RESEARCH:malware-detection"]},
-    "campus-bot": {"id": "campus-bot", "trust_prior": 0.6, "allowed_scopes": ["PROJECT:campus-marketplace"]}
+    "campus-bot": {"id": "campus-bot", "trust_prior": 0.6, "allowed_scopes": ["PROJECT:campus-marketplace", "PROJECT:synapse"]},
+    "Agent-1": {"id": "Agent-1", "trust_prior": 0.9, "allowed_scopes": ["PROJECT:alpha"]},
+    "Agent-2": {"id": "Agent-2", "trust_prior": 0.9, "allowed_scopes": ["PROJECT:beta"]}
 }
 
 def get_agent(agent_id: str) -> Dict[str, Any] | None:
-    return _AGENTS.get(agent_id)
+    agents = _DEFAULT_AGENTS.copy()
+    
+    # Override with JSON config if available
+    json_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "agents.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r") as f:
+                disk_agents = json.load(f)
+                agents.update(disk_agents)
+        except Exception:
+            pass
+            
+    return agents.get(agent_id)

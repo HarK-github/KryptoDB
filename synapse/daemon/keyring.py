@@ -22,8 +22,10 @@ class SessionKeyring:
         return self._keys.get(partition)
         
     def clear(self):
+        from synapse.integrity.partition_crypto import clear_crypto_cache
         self._active_partitions.clear()
         self._keys.clear()
+        clear_crypto_cache()
 
 # Global singleton for the daemon
 keyring = SessionKeyring()

@@ -18,6 +18,7 @@ class Node(SynapseBase, ContentFields):
     pass
     
 class Edge(SynapseBase):
+    predicate: str
     source_agent_id: str
     trust_weight: float = 0.0
     valid_from: Optional[datetime] = None
@@ -28,3 +29,6 @@ class Edge(SynapseBase):
     superseded_by: Optional[str] = None
     subject_id: str
     object_id: str
+    subject_tags: List[str] = Field(default_factory=list)
+    object_tags: List[str] = Field(default_factory=list)
+    is_suspicious: bool = False

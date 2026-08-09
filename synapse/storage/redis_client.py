@@ -6,7 +6,7 @@ import os
 
 class RedisClient:
     def __init__(self):
-        self.url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        self.url = os.getenv("REDIS_URL", "redis://localhost:6380/0")
         self.client = None
 
     def connect(self):

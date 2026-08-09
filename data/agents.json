@@ -1,0 +1,17 @@
+{
+  "campus-bot": {
+    "id": "campus-bot",
+    "trust_prior": 0.5,
+    "allowed_scopes": [
+      "research"
+    ]
+  },
+  "Agent-1": {
+    "id": "Agent-1",
+    "trust_prior": 0.8,
+    "allowed_scopes": [
+      "research",
+      "PROJECT:synapse"
+    ]
+  }
+}

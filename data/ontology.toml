@@ -1,0 +1,12 @@
+[predicates]
+HAS_DIVISION = "Organizational structure and grouping"
+HAS_TEAM = "Division to team breakdown"
+HAS_MEMBER = "Personnel assignment"
+LEADS = "Project leadership allocation"
+HAS_TASK = "Project management breakdown"
+EXPLOITS = "Threat intelligence mapping"
+ASSESSED_AS = "Threat assessment categorization"
+REQUIRES = "Task and project dependency tracking"
+ASSIGNED_TO = "Individual task allocation"
+WORKS_ON = "General personnel allocation"
+HOSTED_ON = "Infrastructure mapping and IOC tracking"
