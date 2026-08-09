@@ -1,0 +1,9 @@
+[agents."malware-det"]
+trust_prior = 0.9
+allowed_scopes = ["RESEARCH:malware-detection"]
+allowed_labels = ["MALWARE", "IOC"]
+
+[agents."campus-bot"]
+trust_prior = 0.6
+allowed_scopes = ["PROJECT:campus-marketplace"]
+allowed_labels = ["PROJECT", "PERSON"]

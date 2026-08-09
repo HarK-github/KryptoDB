@@ -15,5 +15,7 @@ dependencies = [
     "pydantic-settings",
     "pytest",
     "pytest-asyncio",
-    "httpx"
+    "httpx",
+    "cryptography",
+    "mcp"
 ]
