@@ -1286,6 +1286,56 @@ select {
   padding: 22px;
 }
 
+.access-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.access-grid input,
+.access-grid select {
+  width: 100%;
+  margin: 8px 0 14px;
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, .06);
+}
+
+.key-row > div {
+  flex: 1;
+}
+
+.key-row strong {
+  display: block;
+  color: #d8dae1;
+  font: 11px 'IBM Plex Mono';
+}
+
+.key-row .ui-button {
+  min-height: 25px;
+  padding: 0 7px;
+}
+
+.access-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #aeb2bd;
+  font: 11px 'IBM Plex Mono';
+}
+
+.access-empty small,
+.access-empty span {
+  color: #777b87;
+  font-size: 10px;
+}
+
 .step {
   display: flex;
   align-items: flex-start;

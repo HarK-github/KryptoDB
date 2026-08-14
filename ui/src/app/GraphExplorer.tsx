@@ -7,13 +7,18 @@ import { Maximize2, Plus, RefreshCw, Filter, ChevronDown } from "lucide-react";
 // Dynamically import ForceGraph2D to avoid SSR issues with canvas
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
 
-const API_BASE = "http://127.0.0.1:8000";
-const WS_BASE = "ws://127.0.0.1:8000/ws";
+const API_BASE = process.env.NEXT_PUBLIC_SYNAPSE_URL || "http://127.0.0.1:8000";
+const WS_BASE = API_BASE.replace(/^http/, "ws") + "/ws";
 
 interface NodeData {
   id: string;
   type: string;
   scope: string;
+  x?: number;
+  y?: number;
+  fx?: number;
+  fy?: number;
+  lastTraversedTime?: number;
 }
 
 interface EdgeData {
@@ -23,6 +28,7 @@ interface EdgeData {
   predicate: string;
   scope: string;
   trust_weight: number;
+  historical?: boolean;
 }
 
 export default function LiveGraph({ selected, onSelect, hopDepth }: any) {
@@ -33,7 +39,7 @@ export default function LiveGraph({ selected, onSelect, hopDepth }: any) {
   const [isConnected, setIsConnected] = useState(false);
   
   const ws = useRef<WebSocket | null>(null);
-  const fgRef = useRef<any>();
+  const fgRef = useRef<any>(null);
   const graphDataRef = useRef(graphData);
   const eventQueue = useRef<any[]>([]);
   const debounceTimer = useRef<any>(null);
@@ -45,14 +51,17 @@ export default function LiveGraph({ selected, onSelect, hopDepth }: any) {
 
   useEffect(() => {
     if (fgRef.current) {
-      fgRef.current.d3Force('charge').strength(-40);
-      fgRef.current.d3Force('link').distance(30); 
+      fgRef.current.d3Force('charge').strength(-150).distanceMax(250);
+      fgRef.current.d3Force('link').distance(40); 
     }
   }, [fgRef.current]);
 
   const loadSnapshot = async () => {
     try {
-      const res = await fetch(`${API_BASE}/graph/snapshot?agent_id=${agentId}`);
+      const apiKey = window.localStorage.getItem('synapse_api_key');
+      const res = await fetch(`${API_BASE}/graph/snapshot?agent_id=${agentId}`, {
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      });
       if (res.ok) {
         const data = await res.json();
         const nodeMap = new Map();
@@ -108,7 +117,9 @@ export default function LiveGraph({ selected, onSelect, hopDepth }: any) {
 
   const connectWebSocket = useCallback(() => {
     if (ws.current) ws.current.close();
-    ws.current = new WebSocket(`${WS_BASE}/graph-events?agent_id=${agentId}`);
+    const apiKey = window.localStorage.getItem("synapse_api_key");
+    const protocols = apiKey ? [`synapse-bearer.${apiKey}`] : undefined;
+    ws.current = new WebSocket(`${WS_BASE}/graph-events?agent_id=${agentId}`, protocols);
     ws.current.onopen = () => setIsConnected(true);
     ws.current.onclose = () => setIsConnected(false);
     
