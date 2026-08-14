@@ -19,6 +19,7 @@ class Node(SynapseBase, ContentFields):
     
 class Edge(SynapseBase):
     predicate: str
+    description: Optional[str] = None
     source_agent_id: str
     trust_weight: float = 0.0
     valid_from: Optional[datetime] = None

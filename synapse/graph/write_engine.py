@@ -20,31 +20,44 @@ class WriteEngine:
             existing_edge.superseded_by = edge.id
             
         from synapse.integrity.partition_crypto import Encryptor
-        from synapse.integrity.embeddings import embedding_service
         encryptor = Encryptor()
         subject_blind_idx = encryptor.compute_blind_idx(edge.permission_scope, edge.subject_id)
         object_blind_idx = encryptor.compute_blind_idx(edge.permission_scope, edge.object_id)
         
-        subject_ct = encryptor.encrypt(edge.permission_scope, edge.subject_id)
-        object_ct = encryptor.encrypt(edge.permission_scope, edge.object_id)
-        
-        subject_tags_emb = embedding_service.encode(" ".join(edge.subject_tags)) if getattr(edge, 'subject_tags', None) else None
-        object_tags_emb = embedding_service.encode(" ".join(edge.object_tags)) if getattr(edge, 'object_tags', None) else None
+        knowledge_envelope = {
+            "subject": edge.subject_id,
+            "predicate": edge.predicate if hasattr(edge, "predicate") else edge.type,
+            "description": getattr(edge, "description", None),
+            "object": edge.object_id,
+            "source_agent_id": edge.source_agent_id,
+            "subject_tags": list(getattr(edge, "subject_tags", []) or []),
+            "object_tags": list(getattr(edge, "object_tags", []) or []),
+            "derived_from": list(edge.derived_from or []),
+            "is_suspicious": edge.is_suspicious,
+        }
+        knowledge_crypto = encryptor.encrypt_knowledge(edge.permission_scope, edge.id, knowledge_envelope)
         
         from synapse.storage.neo4j_client import neo4j_client
         if neo4j_client.driver:
             # Execute Cypher
             query = """
             MERGE (s:Entity {name_blind_idx: $subject_blind_idx})
-            ON CREATE SET s.id = randomUUID(), s.permission_scope = $permission_scope, s.name_ct = $subject_ct, s.tags_embedding = $subject_tags_emb
+            ON CREATE SET s.id = randomUUID(), s.permission_scope = $permission_scope
             MERGE (o:Entity {name_blind_idx: $object_blind_idx})
-            ON CREATE SET o.id = randomUUID(), o.permission_scope = $permission_scope, o.name_ct = $object_ct, o.tags_embedding = $object_tags_emb
+            ON CREATE SET o.id = randomUUID(), o.permission_scope = $permission_scope
             
             CREATE (s)-[r:FACT {
                 id: $edge_id,
-                predicate: $predicate,
+                knowledge_id: $edge_id,
+                knowledge_ct: $knowledge_ct,
+                knowledge_nonce: $knowledge_nonce,
+                wrapped_dek: $wrapped_dek,
+                knowledge_kek_version: $knowledge_kek_version,
+                subject_search_idx: $subject_search_idx,
+                predicate_search_idx: $predicate_search_idx,
+                object_search_idx: $object_search_idx,
+                search_indexes: $search_indexes,
                 permission_scope: $permission_scope,
-                source_agent_id: $source_agent_id,
                 trust_weight: $trust_weight,
                 valid_from: $valid_from,
                 ingested_at: $ingested_at,
@@ -56,14 +69,16 @@ class WriteEngine:
             params = {
                 "subject_blind_idx": subject_blind_idx,
                 "object_blind_idx": object_blind_idx,
-                "subject_ct": subject_ct,
-                "object_ct": object_ct,
-                "subject_tags_emb": subject_tags_emb,
-                "object_tags_emb": object_tags_emb,
                 "edge_id": edge.id,
-                "predicate": edge.predicate if hasattr(edge, 'predicate') else edge.type,
+                "knowledge_ct": knowledge_crypto["knowledge_ct"],
+                "knowledge_nonce": knowledge_crypto["knowledge_nonce"],
+                "wrapped_dek": knowledge_crypto["wrapped_dek"],
+                "knowledge_kek_version": knowledge_crypto["knowledge_kek_version"],
+                "subject_search_idx": knowledge_crypto["subject_search_idx"],
+                "predicate_search_idx": knowledge_crypto["predicate_search_idx"],
+                "object_search_idx": knowledge_crypto["object_search_idx"],
+                "search_indexes": knowledge_crypto["search_indexes"],
                 "permission_scope": edge.permission_scope,
-                "source_agent_id": edge.source_agent_id,
                 "trust_weight": edge.trust_weight if hasattr(edge, 'trust_weight') else 0.5,
                 "valid_from": edge.valid_from.isoformat() if edge.valid_from else None,
                 "ingested_at": edge.ingested_at.isoformat() if edge.ingested_at else None,
