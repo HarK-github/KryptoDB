@@ -17,5 +17,6 @@ dependencies = [
     "pytest-asyncio",
     "httpx",
     "cryptography",
-    "mcp"
+    "mcp",
+    "sentence-transformers"
 ]
