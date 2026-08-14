@@ -1,6 +1,7 @@
 import sqlite3
 import hashlib
 import json
+import os
 from pathlib import Path
 
 class AuditLogger:
@@ -47,7 +48,14 @@ class AuditLogger:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute('INSERT INTO audit_log (prev_hash, entry_json, entry_hash) VALUES (?, ?, ?)',
                          (prev_hash, entry_json, entry_hash))
-                         
+
+    def log_write(self, actor: str, action: str, target_id: str, scope: str, result: str, details: str = ""):
+        self.log_mutation(
+            action=action,
+            agent_id=actor,
+            edge_id=target_id,
+            permission_scope=scope,
+        )
     def verify_chain(self) -> bool:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute('SELECT seq, prev_hash, entry_json, entry_hash FROM audit_log ORDER BY seq ASC')
@@ -74,3 +82,6 @@ class AuditLogger:
                 last_hash = entry_hash
                 
         return True
+
+
+audit_logger = AuditLogger(Path(os.environ.get("SYNAPSE_AUDIT_DB", "data/audit.db")))

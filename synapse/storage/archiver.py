@@ -7,6 +7,7 @@ from synapse.integrity.audit_log import audit_logger
 from datetime import datetime, timezone, timedelta
 import json
 import logging
+import sqlite3
 
 logger = logging.getLogger(__name__)
 
@@ -80,3 +81,44 @@ class GraphArchiver:
             return 0
 
 archiver = GraphArchiver()
+
+
+class ColdStorageArchiver:
+    """SQLite cold-storage adapter retained for the storage API/tests."""
+
+    def __init__(self, db_path: str = "data/cold_storage.db"):
+        self.db_path = db_path
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS archived_edges (
+                    id TEXT PRIMARY KEY,
+                    valid_to TEXT,
+                    superseded_by TEXT,
+                    payload TEXT
+                )"""
+            )
+
+    def run_sweep(self, days_old: int = 30) -> int:
+        if not neo4j_client.driver:
+            return 0
+        threshold = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
+        query = """
+        MATCH ()-[r:FACT]->()
+        WHERE r.valid_to IS NOT NULL AND r.valid_to < $threshold
+        RETURN r.id AS id, r.valid_to AS valid_to,
+               r.superseded_by AS superseded_by, properties(r) AS props
+        """
+        records, _, _ = neo4j_client.execute_query_with_retry(query, threshold=threshold)
+        archived = 0
+        with sqlite3.connect(self.db_path) as conn:
+            for record in records:
+                conn.execute(
+                    "INSERT OR REPLACE INTO archived_edges (id, valid_to, superseded_by, payload) VALUES (?, ?, ?, ?)",
+                    (record["id"], record["valid_to"], record.get("superseded_by"), json.dumps(record.get("props"), default=str)),
+                )
+                neo4j_client.execute_query_with_retry(
+                    "MATCH ()-[r:FACT {id: $id}]->() DELETE r",
+                    id=record["id"],
+                )
+                archived += 1
+        return archived

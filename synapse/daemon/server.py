@@ -1,7 +1,7 @@
 """
 Unified KryptoDB Daemon server.
 """
-from fastapi import FastAPI, HTTPException, APIRouter, BackgroundTasks
+from fastapi import FastAPI, HTTPException, APIRouter, BackgroundTasks, Depends, Header
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from typing import List
@@ -13,6 +13,9 @@ from synapse.integrity.partition_crypto import Encryptor
 from synapse.storage.neo4j_client import neo4j_client
 from synapse.storage.redis_client import redis_client
 from synapse.storage.bootstrap import bootstrap_storage
+from synapse.daemon.auth import AuthContext, api_keys, parse_bearer
+from synapse.daemon.sessions import SessionState, sessions
+from synapse.integrity.knowledge_migration import migrate_legacy_fact
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,17 +62,42 @@ async def lifespan(app: FastAPI):
 router = APIRouter()
 encryptor = Encryptor()
 
+
+def require_auth(authorization: str | None = Header(default=None)) -> AuthContext:
+    context = api_keys.authenticate(parse_bearer(authorization))
+    if context is None:
+        raise HTTPException(status_code=401, detail="Valid bearer API key required")
+    return context
+
+
+def require_admin(context: AuthContext = Depends(require_auth)) -> AuthContext:
+    if not context.is_admin:
+        raise HTTPException(status_code=403, detail="Administrator API key required")
+    return context
+
+
+def get_request_session(
+    context: AuthContext,
+    session_id: str | None,
+) -> SessionState | None:
+    if context.is_admin:
+        return None
+    session = sessions.get(session_id)
+    if not session or session.agent_id != context.agent_id or session.key_id != context.key_id:
+        raise HTTPException(status_code=403, detail="Valid session activation required")
+    return session
+
 class SessionStartRequest(BaseModel):
     active_partitions: List[str]
 
 from synapse.daemon.events import event_bus
 
 @router.get("/audit")
-def get_audit_log():
+def get_audit_log(context: AuthContext = Depends(require_auth)):
     return event_bus.audit_log
 
 @router.get("/agents")
-def get_agents():
+def get_agents(context: AuthContext = Depends(require_admin)):
     import json
     try:
         with open("data/agents.json", "r") as f:
@@ -78,7 +106,7 @@ def get_agents():
         return {}
 
 @router.get("/ontology")
-def get_ontology():
+def get_ontology(context: AuthContext = Depends(require_admin)):
     try:
         with open("data/ontology.toml", "r") as f:
             return {"content": f.read()}
@@ -86,7 +114,35 @@ def get_ontology():
         return {"content": ""}
 
 @router.post("/session")
-def start_session(req: SessionStartRequest):
+def start_session(req: SessionStartRequest, context: AuthContext = Depends(require_auth)):
+    # Preserve direct internal callers while making the HTTP route authenticated.
+    if not isinstance(context, AuthContext):
+        keyring.clear()
+        for p in req.active_partitions:
+            keyring.add_key(p, encryptor._get_or_create_key(p))
+        return {"active_partitions": req.active_partitions, "status": "active"}
+
+    requested = set(req.active_partitions)
+    allowed_scopes = requested if context.is_admin else api_keys.effective_scopes(context)
+    if not requested.issubset(allowed_scopes):
+        raise HTTPException(status_code=403, detail="Requested partition is outside API-key scope")
+    session = sessions.create(context.agent_id, context.key_id, allowed_scopes)
+    try:
+        for partition in requested:
+            session.keys[partition] = encryptor._get_or_create_key(partition)
+    except RuntimeError as exc:
+        sessions.revoke_for_key(context.key_id)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "session_id": session.session_id,
+        "active_partitions": sorted(session.keys),
+        "allowed_scopes": sorted(allowed_scopes),
+        "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+        "status": "active",
+    }
+
+
+def _legacy_start_session(req: SessionStartRequest):
     keyring.clear()
     
     from synapse.memory_api.session_search import session_index
@@ -126,25 +182,50 @@ def start_session(req: SessionStartRequest):
     return {"active_partitions": req.active_partitions, "status": "active"}
 
 @router.get("/session")
-def get_session():
+def get_session(context: AuthContext = Depends(require_auth), x_synapse_session: str | None = Header(default=None)):
+    if isinstance(context, AuthContext):
+        session = get_request_session(context, x_synapse_session)
+        if session is None:
+            return {"active_partitions": [], "status": "admin"}
+        return {
+            "session_id": session.session_id,
+            "active_partitions": sorted(session.keys),
+            "allowed_scopes": sorted(session.scopes),
+            "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+        }
     return {"active_partitions": list(keyring._keys.keys())}
 
 @router.get("/memory/{agent_id}")
-def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = None, requested_scope: str = None, subject_id: str = None, mode: str = "local"):
+def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = None, requested_scope: str = None, subject_id: str = None, mode: str = "local", context: AuthContext = Depends(require_auth), x_synapse_session: str | None = Header(default=None)):
     from synapse.memory_api.agents import get_agent
     from synapse.graph.read_engine import ReadEngine
-    agent = get_agent(agent_id)
+    if isinstance(context, AuthContext):
+        if not context.is_admin and context.agent_id != agent_id:
+            raise HTTPException(status_code=403, detail="Agent identity is bound to the API key")
+        session = get_request_session(context, x_synapse_session)
+        active_scopes = set(session.keys) if session else set()
+        if context.is_admin:
+            agent = {"id": "admin", "allowed_scopes": []}
+        else:
+            agent = get_agent(context.agent_id)
+            if not agent:
+                raise HTTPException(status_code=403, detail="Unknown agent")
+    else:
+        session = None
+        active_scopes = set(keyring._keys)
+        agent = get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=403, detail="Unknown agent")
     
     if requested_scope:
-        if requested_scope not in agent["allowed_scopes"]:
+        allowed = set(agent.get("allowed_scopes", [])) if not (isinstance(context, AuthContext) and context.is_admin) else active_scopes
+        if requested_scope not in allowed:
             return {"status": "denied_permission", "facts": []}
-        if requested_scope not in keyring._keys:
+        if requested_scope not in active_scopes and not (isinstance(context, AuthContext) and context.is_admin):
             return {"status": "denied_inactive", "facts": []}
         scopes_to_query = [requested_scope]
     else:
-        scopes_to_query = agent["allowed_scopes"]
+        scopes_to_query = sorted(set(agent.get("allowed_scopes", [])) & (active_scopes or set(agent.get("allowed_scopes", []))))
 
     if mode == "global":
         from synapse.graph.gds_engine import GDSEngine
@@ -160,11 +241,14 @@ def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = No
 
     # Verify that at least one allowed scope is currently active in RAM
     from synapse.daemon.keyring import keyring
-    effective_scopes = list(set(scopes_to_query) & set(keyring._keys.keys()))
+    effective_scopes = list(set(scopes_to_query) & (active_scopes or set(keyring._keys.keys())))
     if not effective_scopes:
         return {"status": "denied_inactive", "facts": []}
 
-    read_engine = ReadEngine()
+    read_engine = ReadEngine(
+        session_keyring=session,
+        session_search_index=session.search_index if session else None,
+    )
     facts = read_engine.retrieve_active_facts(effective_scopes, subject_id=subject_id, query_str=query)
     
     if not facts:
@@ -187,11 +271,42 @@ def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = No
     
     return {"status": "ok", "mode": "local", "facts": facts}
 
+
+class MemoryQueryRequest(BaseModel):
+    query: str | None = None
+    subject_id: str | None = None
+    requested_scope: str | None = None
+    mode: str = "local"
+
+
+@router.post("/memory/{agent_id}/query")
+def post_memory_query(
+    agent_id: str,
+    req: MemoryQueryRequest,
+    background_tasks: BackgroundTasks,
+    context: AuthContext = Depends(require_auth),
+    x_synapse_session: str | None = Header(default=None),
+):
+    """Body-based MCP query path; avoids putting search terms in URLs/logs."""
+    return get_memory(
+        agent_id=agent_id,
+        background_tasks=background_tasks,
+        query=req.query,
+        requested_scope=req.requested_scope,
+        subject_id=req.subject_id,
+        mode=req.mode,
+        context=context,
+        x_synapse_session=x_synapse_session,
+    )
+
 @router.get("/graph/snapshot")
-def get_graph_snapshot(agent_id: str):
+def get_graph_snapshot(agent_id: str, context: AuthContext = Depends(require_auth), x_synapse_session: str | None = Header(default=None)):
     from synapse.memory_api.agents import get_agent
     from synapse.daemon.keyring import keyring
     from synapse.storage.neo4j_client import neo4j_client
+
+    if isinstance(context, AuthContext) and not context.is_admin and context.agent_id != agent_id:
+        raise HTTPException(status_code=403, detail="Agent identity is bound to the API key")
     
     if not neo4j_client.driver:
         return {"nodes": [], "edges": []}
@@ -208,7 +323,10 @@ def get_graph_snapshot(agent_id: str):
         allowed_scopes = set(agent.get("allowed_scopes", []))
     
     active_partitions = set(keyring._keys.keys())
-    if agent_id == "admin":
+    if isinstance(context, AuthContext) and not context.is_admin:
+        session = get_request_session(context, x_synapse_session)
+        active_partitions = set(session.keys)
+    if agent_id == "admin" or (isinstance(context, AuthContext) and context.is_admin):
         cleared_scopes = list(allowed_scopes)
     else:
         cleared_scopes = list(allowed_scopes & active_partitions)
@@ -257,7 +375,7 @@ def run_cascade_task(task_id: str, revoked_edge_id: str, valid_to_iso: str, supe
         redis_client.client.set(f"task:{task_id}", f"failed: {str(e)}", ex=3600)
 
 @router.get("/status/{task_id}")
-def get_task_status(task_id: str):
+def get_task_status(task_id: str, context: AuthContext = Depends(require_auth)):
     from synapse.storage.redis_client import redis_client
     status = redis_client.client.get(f"task:{task_id}")
     if not status:
@@ -267,11 +385,20 @@ def get_task_status(task_id: str):
     return {"task_id": task_id, "status": status}
 
 @router.post("/memory")
-def post_memory(req: ProposeFactRequest, background_tasks: BackgroundTasks):
+def post_memory(req: ProposeFactRequest, background_tasks: BackgroundTasks, context: AuthContext = Depends(require_auth)):
     from synapse.memory_api.propose import propose_fact
     from synapse.memory_api.conflict import detect_conflict
     
     edge = Edge(**req.edge)
+
+    if isinstance(context, AuthContext):
+        if not context.is_admin and req.agent_id != context.agent_id:
+            raise HTTPException(status_code=403, detail="Agent identity is bound to the API key")
+        if not context.is_admin and edge.permission_scope not in api_keys.effective_scopes(context):
+            raise HTTPException(status_code=403, detail="Fact scope is outside API-key scope")
+        proposer_id = context.agent_id
+    else:
+        proposer_id = req.agent_id
     
     # Prompt injection content-flagging heuristic (Phase 8.1)
     suspicious_patterns = [
@@ -284,9 +411,11 @@ def post_memory(req: ProposeFactRequest, background_tasks: BackgroundTasks):
         edge.is_suspicious = True
         logger.warning(f"Flagged suspicious content in proposed edge {edge.id}")
 
-    existing_edges = detect_conflict(edge.subject_id, edge.predicate, edge.object_id, edge.permission_scope)
-    
-    status, committed_edge, cascade_args = propose_fact(req.agent_id, edge, False, existing_edges)
+    try:
+        existing_edges = detect_conflict(edge.subject_id, edge.predicate, edge.object_id, edge.permission_scope)
+        status, committed_edge, cascade_args = propose_fact(proposer_id, edge, False, existing_edges)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     
     response = {"status": status}
     
@@ -337,17 +466,138 @@ class OnboardRequest(BaseModel):
     trust_prior: float = 0.5
 
 @router.post("/onboard")
-def onboard_agent(req: OnboardRequest):
+def onboard_agent(req: OnboardRequest, context: AuthContext = Depends(require_admin)):
     from synapse.memory_api.onboarding import auto_onboard_agent
     res = auto_onboard_agent(req.agent_id, req.sample_facts, req.trust_prior)
     return res
 
 class ReclassifyRequest(BaseModel):
-    node_id: str
+    node_id: str | None = None
+    knowledge_id: str | None = None
     to_scope: str
 
+
+class LegacyMigrationRequest(BaseModel):
+    scopes: List[str]
+
+
+@router.post("/maintenance/migrate-legacy")
+def migrate_legacy_records(
+    req: LegacyMigrationRequest,
+    context: AuthContext = Depends(require_auth),
+    x_synapse_session: str | None = Header(default=None),
+):
+    """Convert legacy facts without exposing their plaintext to the caller."""
+    if not isinstance(context, AuthContext) or context.is_admin:
+        raise HTTPException(status_code=403, detail="A scoped agent session is required")
+    session = get_request_session(context, x_synapse_session)
+    requested = set(req.scopes)
+    if not requested.issubset(set(session.keys)):
+        raise HTTPException(status_code=403, detail="Every migration scope must be active in the session")
+    if not neo4j_client.driver:
+        raise HTTPException(status_code=503, detail="Neo4j not connected")
+
+    query = """
+    MATCH (s)-[r:FACT]->(o)
+    WHERE r.permission_scope IN $scopes
+      AND r.knowledge_ct IS NULL
+    RETURN r.id AS edge_id, r.permission_scope AS scope,
+           properties(r) AS edge_props,
+           properties(s) AS subject_props,
+           properties(o) AS object_props
+    """
+    records, _, _ = neo4j_client.execute_query_with_retry(query, scopes=sorted(requested))
+    migrated = 0
+    failed = 0
+    for record in records:
+        try:
+            replacement = migrate_legacy_fact(
+                encryptor=encryptor,
+                partition=record["scope"],
+                edge_id=record["edge_id"],
+                edge_props=dict(record["edge_props"]),
+                subject_props=dict(record["subject_props"]),
+                object_props=dict(record["object_props"]),
+                session_keyring=session,
+            )
+            replacement.pop("legacy_fields_to_remove", None)
+            update_query = """
+            MATCH ()-[r:FACT {id: $edge_id}]->()
+            SET r += $replacement
+            REMOVE r.predicate, r.source_agent_id
+            """
+            neo4j_client.execute_query_with_retry(
+                update_query,
+                edge_id=record["edge_id"],
+                replacement=replacement,
+            )
+            migrated += 1
+        except Exception:
+            failed += 1
+
+    return {
+        "status": "ok" if failed == 0 else "partial",
+        "scopes": sorted(requested),
+        "examined": len(records),
+        "migrated": migrated,
+        "failed": failed,
+    }
+
 @router.post("/reclassify")
-def reclassify_node(req: ReclassifyRequest):
+def reclassify_node(req: ReclassifyRequest, context: AuthContext = Depends(require_auth), x_synapse_session: str | None = Header(default=None)):
+    session = None
+    if isinstance(context, AuthContext) and not context.is_admin:
+        session = get_request_session(context, x_synapse_session)
+        if req.to_scope not in session.scopes:
+            raise HTTPException(status_code=403, detail="Target scope is outside API-key scope")
+    if req.knowledge_id:
+        if session is None or req.to_scope not in session.keys:
+            raise HTTPException(status_code=403, detail="Old and new scopes must be active in the session")
+        if not neo4j_client.driver:
+            raise HTTPException(status_code=500, detail="Neo4j not connected")
+
+        fact_query = """
+        MATCH ()-[r:FACT {id: $knowledge_id}]->()
+        RETURN properties(r) AS props
+        """
+        fact_res, _, _ = neo4j_client.execute_query_with_retry(fact_query, knowledge_id=req.knowledge_id)
+        if not fact_res:
+            raise HTTPException(status_code=404, detail="Knowledge item not found")
+        old_props = dict(fact_res[0]["props"])
+        old_scope = old_props.get("permission_scope")
+        if old_scope not in session.keys:
+            raise HTTPException(status_code=403, detail="Old scope must be active in the session")
+        envelope = encryptor.decrypt_knowledge(
+            old_scope,
+            req.knowledge_id,
+            old_props,
+            session,
+        )
+        if envelope is None:
+            raise HTTPException(status_code=403, detail="Knowledge cannot be decrypted with the active session")
+
+        replacement = encryptor.encrypt_knowledge(req.to_scope, req.knowledge_id, envelope)
+        update_query = """
+        MATCH ()-[r:FACT {id: $knowledge_id}]->()
+        SET r += $replacement,
+            r.permission_scope = $to_scope
+        REMOVE r.predicate, r.source_agent_id
+        """
+        neo4j_client.execute_query_with_retry(
+            update_query,
+            knowledge_id=req.knowledge_id,
+            replacement=replacement,
+            to_scope=req.to_scope,
+        )
+        return {
+            "status": "ok",
+            "knowledge_id": req.knowledge_id,
+            "from_scope": old_scope,
+            "to_scope": req.to_scope,
+        }
+
+    if not req.node_id:
+        raise HTTPException(status_code=400, detail="node_id or knowledge_id is required")
     if not neo4j_client.driver:
         raise HTTPException(status_code=500, detail="Neo4j not connected")
         
@@ -363,7 +613,7 @@ def reclassify_node(req: ReclassifyRequest):
     # 2. Decrypt with old partition key (requires active session)
     plaintext_name = None
     if name_ct:
-        plaintext_name = encryptor.decrypt(old_scope, name_ct)
+        plaintext_name = encryptor.decrypt(old_scope, name_ct, session)
         if not plaintext_name:
             raise HTTPException(status_code=403, detail="Cannot decrypt node. Ensure old partition is active in session.")
     else:
@@ -396,11 +646,24 @@ import asyncio
 
 @router.websocket("/ws/graph-events")
 async def websocket_graph_events(websocket: WebSocket, agent_id: str):
-    await websocket.accept()
+    # Browsers cannot set arbitrary WebSocket headers. Accept the bearer key
+    # through a negotiated subprotocol while retaining Authorization support
+    # for native clients.
+    bearer = parse_bearer(websocket.headers.get("authorization"))
+    requested_protocols = [p.strip() for p in websocket.headers.get("sec-websocket-protocol", "").split(",")]
+    protocol_key = next((p[len("synapse-bearer."):] for p in requested_protocols if p.startswith("synapse-bearer.")), None)
+    context = api_keys.authenticate(bearer or protocol_key)
+    if context is None:
+        await websocket.close(code=1008, reason="Valid bearer API key required")
+        return
+    if not context.is_admin and context.agent_id != agent_id:
+        await websocket.close(code=1008, reason="Agent identity is bound to the API key")
+        return
+    await websocket.accept(subprotocol=f"synapse-bearer.{protocol_key}" if protocol_key else None)
     from synapse.memory_api.agents import get_agent
     from synapse.daemon.keyring import keyring
     
-    agent = get_agent(agent_id)
+    agent = get_agent(context.agent_id) if not context.is_admin else None
     if not agent and agent_id != "admin":
         await websocket.close(code=1008, reason="Unknown agent")
         return
@@ -411,12 +674,13 @@ async def websocket_graph_events(websocket: WebSocket, agent_id: str):
         while True:
             event: GraphEvent = await queue.get()
             if agent:
-                allowed_scopes = set(agent.get("allowed_scopes", []))
+                allowed_scopes = set(agent.get("allowed_scopes", [])) & api_keys.effective_scopes(context)
             else:
                 # "admin" has all scopes implicitly
                 allowed_scopes = {event.permission_scope}
 
-            active_partitions = set(keyring._keys.keys())
+            session = None if context.is_admin else sessions.get(websocket.headers.get("x-synapse-session"))
+            active_partitions = set(session.keys) if session else set()
             cleared_scopes = allowed_scopes & active_partitions
             
             if event.permission_scope in cleared_scopes:
@@ -459,7 +723,7 @@ def health_endpoint():
     return status
 
 @app.get("/admin/graph")
-def admin_graph():
+def admin_graph(context: AuthContext = Depends(require_admin)):
     """Admin endpoint for the TUI to view graph structure."""
     if not neo4j_client.driver:
         return {"nodes": [], "edges": []}
@@ -475,7 +739,7 @@ def admin_graph():
     return {"nodes": nodes, "edges": edges}
 
 @app.get("/admin/scopes")
-def admin_scopes():
+def admin_scopes(context: AuthContext = Depends(require_admin)):
     """Admin endpoint to get all distinct permission scopes currently in the graph."""
     if not neo4j_client.driver:
         return {"scopes": []}
@@ -489,12 +753,32 @@ def admin_scopes():
     scopes = {r["scope"] for r in res if r["scope"]}
     return {"scopes": sorted(list(scopes))}
 
+@app.get("/admin/scope-keys")
+def scope_key_status(context: AuthContext = Depends(require_admin)):
+    """Return non-secret customer scope-key metadata for the admin UI."""
+    statuses = {item["scope"]: item for item in encryptor.scope_key_status()}
+    try:
+        import json
+        with open("data/agents.json", "r") as f:
+            configured_agents = json.load(f).values()
+        for agent in configured_agents:
+            for scope in agent.get("allowed_scopes", []):
+                statuses.setdefault(scope, {
+                    "scope": scope,
+                    "key_id": None,
+                    "configured": False,
+                    "fingerprint": None,
+                })
+    except Exception:
+        pass
+    return {"keys": [statuses[scope] for scope in sorted(statuses)]}
+
 class UpdateAgentRequest(BaseModel):
     agent_id: str
     scopes: List[str]
 
 @app.post("/admin/agents")
-def update_agent(req: UpdateAgentRequest):
+def update_agent(req: UpdateAgentRequest, context: AuthContext = Depends(require_admin)):
     import os
     import json
     
@@ -518,8 +802,43 @@ def update_agent(req: UpdateAgentRequest):
     
     with open(json_path, "w") as f:
         json.dump(agents, f, indent=2)
+
+    sessions.revoke_for_agent(req.agent_id)
         
     return {"status": "ok", "agent_id": req.agent_id, "scopes": req.scopes}
+
+
+class CreateApiKeyRequest(BaseModel):
+    agent_id: str
+    scopes: List[str]
+    key_id: str | None = None
+
+
+@app.post("/admin/api-keys")
+def create_api_key(req: CreateApiKeyRequest, context: AuthContext = Depends(require_admin)):
+    from synapse.memory_api.agents import get_agent
+    agent = get_agent(req.agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Unknown agent")
+    requested = set(req.scopes)
+    if not requested.issubset(set(agent.get("allowed_scopes", []))):
+        raise HTTPException(status_code=400, detail="Key scopes exceed agent allowed scopes")
+    raw_key, record = api_keys.create_key(req.agent_id, sorted(requested), req.key_id)
+    return {"status": "created", "api_key": raw_key, **record, "warning": "Store this key now; it will not be shown again."}
+
+
+@app.post("/admin/api-keys/{key_id}/revoke")
+def revoke_api_key(key_id: str, context: AuthContext = Depends(require_admin)):
+    changed = api_keys.revoke(key_id)
+    sessions.revoke_for_key(key_id)
+    if not changed:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"status": "revoked", "key_id": key_id}
+
+
+@app.get("/admin/api-keys")
+def list_api_keys(context: AuthContext = Depends(require_admin)):
+    return {"keys": api_keys.list_keys()}
 
 app.include_router(router)
 

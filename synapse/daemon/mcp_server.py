@@ -4,14 +4,29 @@ import os
 import json
 
 mcp = FastMCP("synapse")
-DAEMON_URL = "http://localhost:8000"
+DAEMON_URL = os.environ.get("SYNAPSE_URL", "http://localhost:8000").rstrip("/")
 
 def get_agent_id() -> str:
-    """Resolve identity server-side (from environment in this stdio prototype)."""
+    """Resolve the display/URL identity; authorization comes from the API key."""
     return os.environ.get("AGENT_ID", "Agent-1")
 
+
+def get_api_key() -> str:
+    return os.environ.get("SYNAPSE_API_KEY", "")
+
+
+def request_headers() -> dict[str, str]:
+    api_key = get_api_key()
+    if not api_key:
+        raise RuntimeError("SYNAPSE_API_KEY is required")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    session_id = os.environ.get("SYNAPSE_SESSION_ID")
+    if session_id:
+        headers["X-Synapse-Session"] = session_id
+    return headers
+
 @mcp.tool()
-def propose_fact_tool(subject: str, predicate: str, obj: str, scope: str) -> str:
+def propose_fact_tool(subject: str, predicate: str, obj: str, scope: str, description: str = None) -> str:
     """Store a factual relationship in the encrypted memory substrate."""
     agent_id = get_agent_id()
     try:
@@ -20,12 +35,13 @@ def propose_fact_tool(subject: str, predicate: str, obj: str, scope: str) -> str
             "id": str(uuid.uuid4()),
             "type": "FACT",
             "predicate": predicate,
+            "description": description,
             "permission_scope": scope,
             "source_agent_id": agent_id,
             "subject_id": subject,
             "object_id": obj
         }
-        response = httpx.post(f"{DAEMON_URL}/memory", json={"agent_id": agent_id, "edge": edge_data})
+        response = httpx.post(f"{DAEMON_URL}/memory", headers=request_headers(), json={"agent_id": agent_id, "edge": edge_data})
         return json.dumps(response.json(), indent=2)
     except Exception as e:
         return f"error: {str(e)}"
@@ -34,7 +50,7 @@ def propose_fact_tool(subject: str, predicate: str, obj: str, scope: str) -> str
 def task_status_tool(task_id: str) -> str:
     """Check the status of a deferred background task (like an async revocation cascade)."""
     try:
-        response = httpx.get(f"{DAEMON_URL}/status/{task_id}")
+        response = httpx.get(f"{DAEMON_URL}/status/{task_id}", headers=request_headers())
         return json.dumps(response.json(), indent=2)
     except Exception as e:
         return f"error: {str(e)}"
@@ -44,7 +60,7 @@ def run_onboard_tool(sample_facts: list[str]) -> str:
     """Auto-detect the appropriate schema and partition for a new agent based on sample facts."""
     agent_id = get_agent_id()
     try:
-        response = httpx.post(f"{DAEMON_URL}/onboard", json={
+        response = httpx.post(f"{DAEMON_URL}/onboard", headers=request_headers(), json={
             "agent_id": agent_id,
             "sample_facts": sample_facts
         })
@@ -64,18 +80,16 @@ def query_memory_tool(query: str = None, subject_id: str = None, requested_scope
     """
     agent_id = get_agent_id()
     try:
-        url = f"{DAEMON_URL}/memory/{agent_id}?"
-        params = [f"mode={mode}"]
-        if requested_scope:
-            params.append(f"requested_scope={requested_scope}")
-        if subject_id:
-            params.append(f"subject_id={subject_id}")
-        if query:
-            params.append(f"query={query}")
-            
-        url += "&".join(params)
-            
-        response = httpx.get(url)
+        response = httpx.post(
+            f"{DAEMON_URL}/memory/{agent_id}/query",
+            headers=request_headers(),
+            json={
+                "mode": mode,
+                "requested_scope": requested_scope,
+                "subject_id": subject_id,
+                "query": query,
+            },
+        )
         if response.status_code == 403:
             return json.dumps({"status": "denied_permission", "facts": []})
         
@@ -87,18 +101,50 @@ def query_memory_tool(query: str = None, subject_id: str = None, requested_scope
 def session_show_tool() -> str:
     """Check which partitions are currently active/unlocked in this session."""
     try:
-        response = httpx.get(f"{DAEMON_URL}/session")
+        response = httpx.get(f"{DAEMON_URL}/session", headers=request_headers())
+        return json.dumps(response.json(), indent=2)
+    except Exception as e:
+        return f"error: {str(e)}"
+
+
+@mcp.tool()
+def session_activate_tool(active_partitions: list[str]) -> str:
+    """Activate authorized partitions for this MCP process session."""
+    try:
+        response = httpx.post(
+            f"{DAEMON_URL}/session",
+            headers=request_headers(),
+            json={"active_partitions": active_partitions},
+        )
+        payload = response.json()
+        if response.is_success and payload.get("session_id"):
+            os.environ["SYNAPSE_SESSION_ID"] = payload["session_id"]
+        return json.dumps(payload, indent=2)
+    except Exception as e:
+        return f"error: {str(e)}"
+
+
+@mcp.tool()
+def migrate_legacy_tool(scopes: list[str]) -> str:
+    """Migrate authorized legacy facts into per-knowledge encryption envelopes."""
+    try:
+        response = httpx.post(
+            f"{DAEMON_URL}/maintenance/migrate-legacy",
+            headers=request_headers(),
+            json={"scopes": scopes},
+        )
         return json.dumps(response.json(), indent=2)
     except Exception as e:
         return f"error: {str(e)}"
 
 @mcp.tool()
-def reclassify_tool(node_id: str, to_scope: str) -> str:
-    """Move a node to a different partition scope."""
+def reclassify_tool(node_id: str = None, to_scope: str = "", knowledge_id: str = None) -> str:
+    """Move a legacy node or one encrypted knowledge item to another scope."""
     try:
         response = httpx.post(
             f"{DAEMON_URL}/reclassify",
-            json={"node_id": node_id, "to_scope": to_scope}
+            headers=request_headers(),
+            json={"node_id": node_id, "knowledge_id": knowledge_id, "to_scope": to_scope}
         )
         if response.status_code == 403:
             return json.dumps({"status": "error", "message": "Denied: Old partition must be active to decrypt."})
