@@ -19,7 +19,7 @@ It exposes its memory substrate via the **Model Context Protocol (MCP)**, allowi
 
 ## ⬡ System Architecture
 
-![System Architecture](structure.png)
+![System Architecture](ui/public/structure.png)
 
 ---
 
