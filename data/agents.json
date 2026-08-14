@@ -13,5 +13,10 @@
       "research",
       "PROJECT:synapse"
     ]
+  },
+  "": {
+    "id": "",
+    "trust_prior": 0.5,
+    "allowed_scopes": []
   }
 }
