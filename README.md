@@ -44,33 +44,41 @@ KryptoDB operates as an intermediary broker between LLM agents and the encrypted
 
 ---
 
-## 🚀 Quick Start (Local Development)
+## 🚀 Deployment Options
 
-> **⚠️ WARNING:** The following instructions are for local development only. They use plaintext HTTP, print secrets to the terminal, and utilize an unencrypted bootstrap mode. Do not use this setup for production data.
+KryptoDB can be deployed via Docker (recommended) or as a native Python server. Both setups assume Neo4j 5.x and Redis 7.x are available.
 
-### Prerequisites
-- Python 3.10+
-- Neo4j 5.x (with APOC and GDS plugins)
-- Redis 7.x
-- *(SQLite is bundled internally by the daemon for lightweight state tracking, no setup required).*
-
-### 1. Start the backend
-Ensure Docker is installed, then launch the production stack (which includes KryptoDB, Neo4j, and Redis) in detached mode:
+### Option 1: Docker (Recommended)
+Ensure Docker is installed, then launch the production stack in detached mode:
 
 ```bash
 docker compose -f kryptodb-compose.yml up -d
 ```
 *The web UI is now accessible at http://127.0.0.1:8000.*
 
-### 2. Provision an Agent API Key
-In a separate terminal, use the admin key to mint an agent credential:
+### Option 2: Native Python Server
+If you prefer not to use Docker, you can run the daemon directly:
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+# Ensure .env is configured with NEO4J_URI and REDIS_URL
+uvicorn kryptodb.daemon.server:app --host 127.0.0.1 --port 8000
+```
+*The web UI is now accessible at http://127.0.0.1:8000.*
+
+---
+
+## 🔑 Provision an Agent API Key
+Once your deployment is running (via Docker or Python), use the admin key to mint an agent credential:
 ```bash
 curl -X POST http://127.0.0.1:8000/admin/api-keys \
   -H "Authorization: Bearer dev-admin-key" \
   -H "Content-Type: application/json" \
   -d '{"agent_id":"Agent-1","scopes":["research"]}'
 ```
-*Note the returned `api_key`.*
+*Note the returned `api_key` for the next step.*
 
 ### 3. Connect via MCP (Claude Desktop / Cursor / Codex)
 Add the Docker MCP server to your IDE/client configuration, replacing `<paste-api-key>` with the key from the previous step:
