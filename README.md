@@ -9,8 +9,6 @@
 
 KryptoDB is a graph-based memory server for multi-agent systems, exposing its knowledge substrate via the Model Context Protocol (MCP). It enforces strict access boundaries using per-knowledge AES-256-GCM envelope encryption, API-key identity, and session activation gates.
 
-**Non-Goals:** KryptoDB does not provide confidential substring, fuzzy, ranked, or semantic search over encrypted text; queries must be exact matches on known index terms.
-
 ---
 
 <div align="center">
@@ -170,3 +168,7 @@ docker run --rm \
 ---
 ## License
 Released under the MIT License.
+
+---
+## Contributors
+Made with ❤️ by **Harshit Kandpal** - *Creator & Lead Developer*
