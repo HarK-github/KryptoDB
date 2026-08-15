@@ -134,19 +134,16 @@ docker compose -f kryptodb-compose.yml up -d
 {
   "mcpServers": {
     "kryptodb": {
-      "command": "docker",
+      "command": "/home/harshit-kandpal/Documents/github_files/AIAgent/.venv/bin/python",
       "args": [
-        "run",
-        "-i",
-        "--rm",
-        "--network", "kryptodb_default",
-        "--mount", "type=bind,source=/secure/kryptodb/agent-1-api-key,target=/run/secrets/agent-api-key,readonly",
-        "-e", "AGENT_ID=Agent-1",
-        "-e", "KRYPTODB_API_KEY_FILE=/run/secrets/agent-api-key",
-        "-e", "KRYPTODB_URL=http://kryptodb:8000",
-        "ghcr.io/prolomaster/kryptodb:latest",
-        "mcp"
-      ]
+        "-m", 
+        "kryptodb.daemon.mcp_server"
+      ],
+      "env": {
+        "AGENT_ID": "Agent-1",
+        "KRYPTODB_API_KEY": "<paste-api-key>",
+        "KRYPTODB_URL": "http://127.0.0.1:8000"
+      }
     }
   }
 }
@@ -157,23 +154,19 @@ docker compose -f kryptodb-compose.yml up -d
 
 ### Codex / TOML Configuration
 
-If you are using an agent like Codex that requires a TOML format for MCP server definitions, add the following to your configuration:
+If you are running Codex (or RooCode/Windsurf) on the same machine as your backend, you can run the MCP server natively via Python without dealing with Docker networks. 
+
+Add the following to your Codex configuration file (make sure to replace the `<paste-api-key>` placeholder):
 
 ```toml
-[mcpServers.kryptodb]
-command = "docker"
-args = [
-  "run",
-  "-i",
-  "--rm",
-  "--network", "kryptodb_default",
-  "--mount", "type=bind,source=/secure/kryptodb/agent-1-api-key,target=/run/secrets/agent-api-key,readonly",
-  "-e", "AGENT_ID=Agent-1",
-  "-e", "KRYPTODB_API_KEY_FILE=/run/secrets/agent-api-key",
-  "-e", "KRYPTODB_URL=http://kryptodb:8000",
-  "ghcr.io/prolomaster/kryptodb:latest",
-  "mcp"
-]
+[mcp_servers.kryptodb]
+command = "/home/harshit-kandpal/Documents/github_files/AIAgent/.venv/bin/python"
+args = ["-m", "kryptodb.daemon.mcp_server"]
+
+[mcp_servers.kryptodb.env]
+AGENT_ID = "Agent-1"
+KRYPTODB_API_KEY = "<paste-api-key>"
+KRYPTODB_URL = "http://127.0.0.1:8000"
 ```
 
 ### Cursor IDE Integration
