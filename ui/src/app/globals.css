@@ -120,18 +120,19 @@ button {
   padding: 0 9px 22px;
 }
 
-.workspace button {
+.workspace button, .workspace-value {
   width: 100%;
   border: 1px solid var(--border);
   background: #14161b;
   color: #d9dbe4;
   padding: 9px 10px;
-  border-radius: 7px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  text-align: left;
+  gap: 10px;
+  cursor: default;
 }
 
 .workspace button svg {
@@ -670,7 +671,7 @@ select {
   background: #59b8aa;
 }
 
-.scope-project-synapse .scope-mark {
+.scope-project-kryptodb .scope-mark {
   background: #8c73ee;
 }
 
@@ -1334,6 +1335,34 @@ select {
 .access-empty span {
   color: #777b87;
   font-size: 10px;
+}
+
+.admin-connect-card {
+  max-width: 720px;
+  margin-top: 24px;
+}
+
+.admin-connect-card h2 {
+  margin: 12px 0 8px;
+  color: #e3e5eb;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.admin-connect-row {
+  display: flex;
+  gap: 8px;
+  margin: 20px 0 10px;
+}
+
+.admin-connect-row input {
+  flex: 1;
+}
+
+.auth-error {
+  margin: 8px 0;
+  color: #ff9b9b;
+  font: 10px 'IBM Plex Mono';
 }
 
 .step {

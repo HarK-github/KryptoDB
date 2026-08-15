@@ -7,7 +7,7 @@ import { Maximize2, Plus, RefreshCw, Filter, ChevronDown } from "lucide-react";
 // Dynamically import ForceGraph2D to avoid SSR issues with canvas
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
 
-const API_BASE = process.env.NEXT_PUBLIC_SYNAPSE_URL || "http://127.0.0.1:8000";
+const API_BASE = process.env.NEXT_PUBLIC_KRYPTODB_URL || (typeof window !== 'undefined' ? `http://${window.location.hostname}:8000` : "http://127.0.0.1:8000");
 const WS_BASE = API_BASE.replace(/^http/, "ws") + "/ws";
 
 interface NodeData {
@@ -49,16 +49,23 @@ export default function LiveGraph({ selected, onSelect, hopDepth }: any) {
     graphDataRef.current = graphData;
   }, [graphData]);
 
+  const configureGraphLayout = useCallback((graph: any) => {
+    // Keep connected knowledge points compact. A very small charge prevents
+    // exact overlaps without recreating the wide spacing of the default force.
+    graph.d3Force('charge').strength(-8).distanceMax(90);
+    graph.d3Force('link').distance(26).strength(1);
+    graph.d3ReheatSimulation();
+  }, []);
+
   useEffect(() => {
-    if (fgRef.current) {
-      fgRef.current.d3Force('charge').strength(-150).distanceMax(250);
-      fgRef.current.d3Force('link').distance(40); 
-    }
-  }, [fgRef.current]);
+    // The force-graph ref is populated after render. Reapply the compact
+    // layout whenever nodes or links arrive, including live graph updates.
+    if (fgRef.current) configureGraphLayout(fgRef.current);
+  }, [graphData.nodes.length, graphData.links.length, configureGraphLayout]);
 
   const loadSnapshot = async () => {
     try {
-      const apiKey = window.localStorage.getItem('synapse_api_key');
+      const apiKey = window.localStorage.getItem('kryptodb_api_key');
       const res = await fetch(`${API_BASE}/graph/snapshot?agent_id=${agentId}`, {
         headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
       });
@@ -117,9 +124,13 @@ export default function LiveGraph({ selected, onSelect, hopDepth }: any) {
 
   const connectWebSocket = useCallback(() => {
     if (ws.current) ws.current.close();
-    const apiKey = window.localStorage.getItem("synapse_api_key");
-    const protocols = apiKey ? [`synapse-bearer.${apiKey}`] : undefined;
-    ws.current = new WebSocket(`${WS_BASE}/graph-events?agent_id=${agentId}`, protocols);
+    const apiKey = window.localStorage.getItem("kryptodb_api_key");
+    // Pass the API key as a URL query param — WebSocket subprotocol strings
+    // are restricted to RFC 7230 token characters and reject arbitrary key values.
+    const url = new URL(`${WS_BASE}/graph-events`);
+    url.searchParams.set("agent_id", agentId);
+    if (apiKey) url.searchParams.set("api_key", apiKey);
+    ws.current = new WebSocket(url.toString());
     ws.current.onopen = () => setIsConnected(true);
     ws.current.onclose = () => setIsConnected(false);
     
@@ -146,7 +157,10 @@ export default function LiveGraph({ selected, onSelect, hopDepth }: any) {
     };
   }, [agentId, processEventQueue]);
 
+
   useEffect(() => {
+    const apiKey = window.localStorage.getItem("kryptodb_api_key");
+    if (!apiKey) return;
     loadSnapshot();
     connectWebSocket();
     return () => ws.current?.close();
@@ -215,19 +229,16 @@ export default function LiveGraph({ selected, onSelect, hopDepth }: any) {
               ctx.fillStyle = getScopeColor(node.scope);
               ctx.fill();
             }
+            // A subtle outline keeps tightly packed nodes distinguishable.
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, 6, 0, 2 * Math.PI, false);
+            ctx.strokeStyle = 'rgba(5, 8, 12, 0.9)';
+            ctx.lineWidth = 1.25 / globalScale;
+            ctx.stroke();
             if (selected && selected.id === node.id) {
               ctx.strokeStyle = '#ffffff';
               ctx.lineWidth = 2 / globalScale;
               ctx.stroke();
-            }
-            if (selected && selected.id === node.id) {
-                const label = node.type || "Entity";
-                const fontSize = 16 / globalScale; 
-                ctx.font = `${fontSize}px Sans-Serif`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillStyle = 'rgba(255, 255, 255, 1)';
-                ctx.fillText(label, node.x, node.y + (12 / globalScale));
             }
           }}
           linkColor={(link: any) => link.historical ? '#334155' : getScopeColor(link.scope)}

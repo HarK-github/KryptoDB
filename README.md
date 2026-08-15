@@ -1,32 +1,32 @@
 <div align="center">
+  <img src="image.png" alt="KryptoDB Logo" width="100" height="100"   />
   <h1>KryptoDB</h1>
   <p><b>K</b>nowledge <b>R</b>etrieval & <b>Y</b>ielding <b>P</b>rotocol for <b>T</b>rustless <b>O</b>perations <b>D</b>ata<b>B</b>ase</p>
   <p><i>Crypto-Enforced, Multi-Agent Memory Access Control on Neo4j</i></p>
-  
-  <p>
-    <img src="https://img.shields.io/badge/Python-3.10%2B-blue" alt="Python 3.10+">
-    <img src="https://img.shields.io/badge/Neo4j-5.x-blue" alt="Neo4j">
-    <img src="https://img.shields.io/badge/Security-AES--256--GCM-black" alt="AES-256-GCM">
-    <img src="https://img.shields.io/badge/Protocol-MCP-green" alt="MCP">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/Neo4j-5.x-blue" alt="Neo4j">
+  <img src="https://img.shields.io/badge/Security-AES--256--GCM-black" alt="AES-256-GCM">
+  <img src="https://img.shields.io/badge/Protocol-MCP-green" alt="MCP">
   </p>
 </div>
 
-KryptoDB is an advanced, graph-based memory server designed specifically for multi-agent environments. Every new knowledge item is encrypted with its own AES-256-GCM data-encryption key, while API-key identity, scope authorization, and session activation determine whether that item can be searched or decrypted.
+KryptoDB is an advanced, graph-based memory server designed specifically for multi-agent environments. In normal mode, every new knowledge item is encrypted with its own AES-256-GCM data-encryption key. An explicit bootstrap mode can temporarily stage new records as pending until the administrator configures keys and completes migration. API-key identity, scope authorization, and session activation determine whether an item can be searched or decrypted.
 
 It exposes its memory substrate via the **Model Context Protocol (MCP)**, allowing AI agents to read, write, and manage knowledge securely.
 
 ---
 
-## ⬡ System Architecture
-
-![System Architecture](ui/public/structure.png)
+<div align="center">
+  <img src="image-1.png" alt="KryptoDB UI Dashboard" style="max-width: 100%" />
+  <label>KryptoDB Playground</label>
+</div>
 
 ---
 
 ## ❖ Key Features
 
 ### 1. Per-Knowledge Envelope Encryption
-- **Unique DEK:** Every new fact gets a fresh random AES-256-GCM data-encryption key.
+- **Unique DEK:** Every new fact gets a fresh random AES-256-GCM data-encryption key in protected mode.
 - **Wrapped DEK:** A stable scope key wraps only the per-knowledge DEK; agents never receive DEKs or KEKs.
 - **Complete envelope:** Subject, predicate, object, description, source identity, tags, and sensitive fact metadata are encrypted before persistence.
 - **Authenticated data:** The envelope is bound to its knowledge ID, scope, and schema version.
@@ -60,6 +60,12 @@ For global summarization (e.g., "what are the main themes of this project?"), we
 
 ---
 
+## ⬡ System Architecture
+
+![System Architecture](ui/public/structure.png)
+
+---
+
 ## ❯ Getting Started
 
 ### Prerequisites
@@ -80,25 +86,31 @@ pip install -e .
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
-REDIS_URL=redis://localhost:6379/0
-SYNAPSE_ENV=development
-SYNAPSE_MASTER_KEY=<64-hex-character-production-key>
-SYNAPSE_ADMIN_API_KEY=<admin-key>
-# Optional customer-managed scope keys (use a mounted secret file in production)
-SYNAPSE_SCOPE_KEYS_JSON={"diagnosis":{"key_id":"diagnosis:v1","key":"<base64-32-byte-key>"},"patients":{"key_id":"patients:v1","key":"<base64-32-byte-key>"}}
-# Or: SYNAPSE_SCOPE_KEYS_FILE=/run/secrets/synapse-scope-keys.json
+# Use 6380 when Redis is provided by the repository's local docker-compose.yml;
+# use 6379 for a native Redis installation.
+REDIS_URL=redis://localhost:6380/0
+KRYPTODB_ENV=development
+KRYPTODB_MASTER_KEY=<64-hex-character-key>
+KRYPTODB_ADMIN_API_KEY=<admin-key>
+# Optional customer-managed scope keys
+KRYPTODB_SCOPE_KEYS_JSON={"diagnosis":{"key_id":"diagnosis:v1","key":"<base64-32-byte-key>"},"patients":{"key_id":"patients:v1","key":"<base64-32-byte-key>"}}
+# Or: KRYPTODB_SCOPE_KEYS_FILE=/run/secrets/kryptodb-scope-keys.json
+# Temporary first-run staging mode; use only when intentionally bootstrapping
+# an empty deployment without scope keys.
+KRYPTODB_BOOTSTRAP_UNENCRYPTED=false
 ```
 
 ### Running the Server
 Launch the backend Daemon (which handles cryptographic state, connections, and background workers):
 ```bash
-python -m synapse.daemon.server
+uvicorn kryptodb.daemon.server:app --host 127.0.0.1 --port 8000
 ```
 
-Run the MCP interface for your agents. Each MCP process must receive a real API key:
+Run the MCP interface for an agent. It must receive an agent API key, not the
+administrator key or a customer encryption key:
 ```bash
-# Example with Claude Desktop or similar MCP clients
-mcp run synapse/daemon/mcp_server.py
+AGENT_ID=Agent-1 KRYPTODB_API_KEY=<agent-api-key> \
+  python -m kryptodb.daemon.mcp_server
 ```
 
 ## 🔌 Connecting the MCP Server
@@ -107,18 +119,17 @@ KryptoDB implements the Model Context Protocol (MCP) to seamlessly provide zero-
 
 ### Claude Desktop Integration
 
-1. Ensure your backend storage is running via Docker:
+1. Start the production stack. It includes the KryptoDB web/MCP image,
+   Neo4j, and Redis:
 ```bash
-docker-compose up -d
+docker compose -f kryptodb-compose.yml up -d
 ```
 2. Open your Claude Desktop configuration file:
    - **Mac**: `~/Library/Application Support/Claude/claude_desktop_config.json`
    - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-3. Build the KryptoDB Docker image (if you haven't already):
-```bash
-docker build -t kryptodb-mcp .
-```
-4. Add the KryptoDB server configuration, ensuring it uses the Docker runtime and maps to the host network so it can talk to Neo4j and Redis:
+3. Add a configuration that launches the published image in MCP mode. Keep the
+   agent credential in a protected secret file; do not put it in the JSON or a
+   command-line argument:
 ```json
 {
   "mcpServers": {
@@ -128,31 +139,31 @@ docker build -t kryptodb-mcp .
         "run",
         "-i",
         "--rm",
-        "--network",
-        "host",
-        "-e", "NEO4J_URI=bolt://localhost:7687",
-        "-e", "NEO4J_USER=neo4j",
-        "-e", "NEO4J_PASSWORD=password",
-        "-e", "REDIS_URL=redis://localhost:6380/0",
+        "--network", "kryptodb_default",
+        "--mount", "type=bind,source=/secure/kryptodb/agent-1-api-key,target=/run/secrets/agent-api-key,readonly",
         "-e", "AGENT_ID=Agent-1",
-        "-e", "SYNAPSE_API_KEY=syn_live_<key>",
-        "kryptodb-mcp"
+        "-e", "KRYPTODB_API_KEY_FILE=/run/secrets/agent-api-key",
+        "-e", "KRYPTODB_URL=http://kryptodb:8000",
+        "ghcr.io/prolomaster/kryptodb:latest",
+        "mcp"
       ]
     }
   }
 }
 ```
 
-5. Restart Claude Desktop. You will now see the KryptoDB tools (like 🔨 `query_memory_tool`) available!
+4. Restart Claude Desktop. Activate a permitted scope with
+   `session_activate_tool` before querying.
 
 ### Cursor IDE Integration
 
-1. Build the Docker image if you haven't yet: `docker build -t kryptodb-mcp .`
-2. Open Cursor Settings -> Features -> MCP Servers.
+1. Start the production stack with `docker compose -f kryptodb-compose.yml up -d`.
+2. Open Cursor Settings → Features → MCP Servers.
 3. Click **+ Add New MCP Server**.
 4. Name it `KryptoDB`.
 5. Set the Type to `command`.
-6. Set the Command to: `docker run -i --rm --network host -e NEO4J_URI=bolt://localhost:7687 -e NEO4J_USER=neo4j -e NEO4J_PASSWORD=password -e REDIS_URL=redis://localhost:6380/0 -e AGENT_ID=Agent-1 -e SYNAPSE_API_KEY=syn_live_<key> kryptodb-mcp`.
+6. Set the command to the equivalent Docker invocation from the Claude example,
+   using your protected agent-key file and `--network kryptodb_default`.
 7. Save and refresh. Activate a permitted partition with `session_activate_tool` before querying.
 
 ---
@@ -182,41 +193,63 @@ KryptoDB exposes the following tools to the LLM agent via the Model Context Prot
 
 ```bash
 curl -X POST http://127.0.0.1:8000/admin/api-keys \
-  -H "Authorization: Bearer $SYNAPSE_ADMIN_API_KEY" \
+  -H "Authorization: Bearer $KRYPTODB_ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"agent_id":"Agent-1","scopes":["research"]}'
 ```
 
+This is only for localhost testing. It prints the one-time agent credential and
+must not be used on a shared or remotely reachable deployment.
+
 #### Production bootstrap
 
-In production, use the built-in `synapse bootstrap` command instead of `curl`.
-It reads the admin key from a file, writes the agent credential to a `0600`
-file, and never prints the raw key to stdout or logs:
+In production, use the built-in bootstrap command instead of `curl`. When using
+the published image, run the CLI from the image with the admin secret mounted:
 
 ```bash
-# Write the admin key to a protected file once (via secret mount or init container)
-printf 'your-admin-key' > /run/secrets/admin_key && chmod 600 /run/secrets/admin_key
-
-# Provision the agent credential
-synapse bootstrap \
+docker run --rm \
+  --network kryptodb_default \
+  --user "$(id -u):$(id -g)" \
+  --mount type=bind,source=/secure/kryptodb/admin-key,target=/run/secrets/admin-key,readonly \
+  --mount type=bind,source=/secure/kryptodb/agent-1-api-key,target=/run/secrets/agent-key \
+  --entrypoint python \
+  ghcr.io/prolomaster/kryptodb:latest \
+  -m kryptodb.cli bootstrap \
   --agent-id Agent-1 \
   --scopes research \
-  --admin-key-file /run/secrets/admin_key \
-  --out-file /run/secrets/agent_key \
-  --url http://127.0.0.1:8000
-
-# Mount /run/secrets/agent_key into the MCP container as SYNAPSE_API_KEY
+  --admin-key-file /run/secrets/admin-key \
+  --out-file /run/secrets/agent-key \
+  --url http://kryptodb:8000
 ```
+
+Before running it, create the protected input and output files on the host, for
+example with `install -m 600 /dev/null /secure/kryptodb/agent-1-api-key`.
+The admin-key file must already contain the administrator credential. The
+command writes the new agent key with mode `0600` and does not print the raw
+key. Adjust the mounted paths to match your host paths exactly.
 
 Additional production requirements:
 - Bind the daemon to localhost and expose it through an **HTTPS reverse proxy** or private network.
-- Mount `SYNAPSE_ADMIN_API_KEY` as a Docker/Kubernetes secret file, not a plain env var (see `kryptodb-compose.yml`).
-- API key creation is **rejected** if the requested scope's customer encryption key is not configured.
+- Mount `KRYPTODB_ADMIN_API_KEY` as a Docker/Kubernetes secret file, not a plain env var (see `kryptodb-compose.yml`).
+- In normal/locked mode, API key creation is **rejected** if the requested scope's customer encryption key is not configured. Explicit bootstrap mode may provision scoped agents for pending writes.
 - Restrict or disable the `/admin/api-keys` route after initial provisioning where practical.
 
-The raw API key is returned once and written to the output file. API keys are authentication credentials, not encryption keys.
+The daemon returns the raw API key only once; the CLI writes it to the output
+file without printing it. API keys are authentication credentials, not
+encryption keys.
 
-### Legacy Migration
+### Bootstrap and Legacy Migration
+
+For an intentionally unencrypted first-run staging deployment, set:
+
+```env
+KRYPTODB_BOOTSTRAP_UNENCRYPTED=true
+```
+
+New records are marked `pending` and the UI displays an unencrypted warning.
+Configure the required scope keys, restart the server, run migration preflight,
+then use **Migrate and lock encryption**. Do not use this mode for sensitive data
+until migration has completed.
 
 Activate the relevant legacy scopes first, then call `migrate_legacy_tool`. Migration decrypts and re-encrypts records inside the daemon, removes legacy relationship fields only after successful conversion, and returns counts rather than plaintext.
 
@@ -227,23 +260,29 @@ When importing a new knowledge base, choose one of two modes:
 - **New isolated scope/key:** configure a new customer scope key, such as `research:v1`, and import the dataset under that scope.
 - **Existing scope/key:** attach the dataset to an existing scope, such as `diagnosis`. New items automatically use that scope's customer KEK and derived search key, while still receiving unique per-item DEKs.
 
-The scope must be explicit. If its customer key is unavailable, writes and session activation fail closed; the server never stores the dataset unencrypted as a fallback. The frontend shows scope-key IDs, fingerprints, and availability, but never accepts or displays raw key material.
+The scope must be explicit. In normal mode, if its customer key is unavailable,
+writes and session activation fail closed. In explicit bootstrap mode, new records
+are marked `pending` and must be migrated before bootstrap is locked. The frontend
+shows scope-key IDs, fingerprints, and availability; it only generates or
+validates a one-time secret file during administrator bootstrap.
 
 ## Frontend
 
 The Next.js frontend is an authenticated operational console for graph inspection,
 agent access, ontology, audit, and MCP setup.
 
+For direct development:
+
 ```bash
 cd ui
 npm install
-NEXT_PUBLIC_SYNAPSE_URL=http://127.0.0.1:8000 npm run dev
+NEXT_PUBLIC_KRYPTODB_URL=http://127.0.0.1:8000 npm run dev
 ```
 
-Open `http://localhost:3000`, enter an API key in **Agents & Access**, and save it
-in the browser. API requests use `Authorization: Bearer ...`; the live graph uses
-the same credential through a negotiated WebSocket subprotocol. The UI never
-receives or stores encryption keys and does not display plaintext until the
+Open `http://localhost:3000`. For the unified Docker image, open
+`http://localhost:8000`; the frontend is served by the daemon from the same
+origin. The UI requires the administrator API key for administration. It never
+receives customer encryption keys and does not display plaintext until the
 backend has authorized and decrypted a knowledge envelope.
 
 ---
