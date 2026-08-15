@@ -10,7 +10,7 @@
   </p>
 </div>
 
-KryptoDB is an advanced, graph-based memory server designed specifically for multi-agent environments. In normal mode, every new knowledge item is encrypted with its own AES-256-GCM data-encryption key. An explicit bootstrap mode can temporarily stage new records as pending until the administrator configures keys and completes migration. API-key identity, scope authorization, and session activation determine whether an item can be searched or decrypted.
+KryptoDB is an advanced, graph-based memory server designed specifically for multi-agent environments. Every knowledge item is encrypted with its own AES-256-GCM data-encryption key. API-key identity, scope authorization  , and session activation determine whether an item can be searched by an agent.
 
 It exposes its memory substrate via the **Model Context Protocol (MCP)**, allowing AI agents to read, write, and manage knowledge securely.
 
@@ -154,6 +154,27 @@ docker compose -f kryptodb-compose.yml up -d
 
 4. Restart Claude Desktop. Activate a permitted scope with
    `session_activate_tool` before querying.
+
+### Codex / TOML Configuration
+
+If you are using an agent like Codex that requires a TOML format for MCP server definitions, add the following to your configuration:
+
+```toml
+[mcpServers.kryptodb]
+command = "docker"
+args = [
+  "run",
+  "-i",
+  "--rm",
+  "--network", "kryptodb_default",
+  "--mount", "type=bind,source=/secure/kryptodb/agent-1-api-key,target=/run/secrets/agent-api-key,readonly",
+  "-e", "AGENT_ID=Agent-1",
+  "-e", "KRYPTODB_API_KEY_FILE=/run/secrets/agent-api-key",
+  "-e", "KRYPTODB_URL=http://kryptodb:8000",
+  "ghcr.io/prolomaster/kryptodb:latest",
+  "mcp"
+]
+```
 
 ### Cursor IDE Integration
 
