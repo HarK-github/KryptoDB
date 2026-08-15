@@ -826,8 +826,33 @@ def create_api_key(req: CreateApiKeyRequest, context: AuthContext = Depends(requ
     requested = set(req.scopes)
     if not requested.issubset(set(agent.get("allowed_scopes", []))):
         raise HTTPException(status_code=400, detail="Key scopes exceed agent allowed scopes")
+    # Reject scopes whose customer encryption key is not configured.
+    # In production (customer_keys_required=True) every scope must have a key.
+    # In development, warn but allow unconfigured scopes.
+    missing_keys = [s for s in sorted(requested) if s not in encryptor.scope_keys]
+    if missing_keys:
+        if encryptor.customer_keys_required:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Cannot create API key: customer encryption key not configured "
+                    f"for scope(s): {missing_keys}. "
+                    "Configure SYNAPSE_SCOPE_KEYS_JSON / SYNAPSE_SCOPE_KEYS_FILE before provisioning."
+                ),
+            )
+        else:
+            logger.warning(
+                "Creating API key for scope(s) without a customer key (development mode only): %s",
+                missing_keys,
+            )
     raw_key, record = api_keys.create_key(req.agent_id, sorted(requested), req.key_id)
-    return {"status": "created", "api_key": raw_key, **record, "warning": "Store this key now; it will not be shown again."}
+    return {
+        "status": "created",
+        "api_key": raw_key,
+        **record,
+        "warning": "Store this key now; it will not be shown again.",
+    }
+
 
 
 @app.post("/admin/api-keys/{key_id}/revoke")

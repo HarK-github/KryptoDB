@@ -174,7 +174,11 @@ KryptoDB exposes the following tools to the LLM agent via the Model Context Prot
 
 ### API-Key Setup
 
-Create an agent API key through the authenticated admin endpoint:
+#### Development (local only)
+
+> **⚠️ Development only.** The following uses plaintext HTTP, reads the admin
+> key from an environment variable, and prints the returned secret to the
+> terminal. Do not use this in production.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/admin/api-keys \
@@ -183,7 +187,34 @@ curl -X POST http://127.0.0.1:8000/admin/api-keys \
   -d '{"agent_id":"Agent-1","scopes":["research"]}'
 ```
 
-The raw API key is returned once. Store it as `SYNAPSE_API_KEY` in the MCP process. API keys are authentication credentials, not encryption keys.
+#### Production bootstrap
+
+In production, use the built-in `synapse bootstrap` command instead of `curl`.
+It reads the admin key from a file, writes the agent credential to a `0600`
+file, and never prints the raw key to stdout or logs:
+
+```bash
+# Write the admin key to a protected file once (via secret mount or init container)
+printf 'your-admin-key' > /run/secrets/admin_key && chmod 600 /run/secrets/admin_key
+
+# Provision the agent credential
+synapse bootstrap \
+  --agent-id Agent-1 \
+  --scopes research \
+  --admin-key-file /run/secrets/admin_key \
+  --out-file /run/secrets/agent_key \
+  --url http://127.0.0.1:8000
+
+# Mount /run/secrets/agent_key into the MCP container as SYNAPSE_API_KEY
+```
+
+Additional production requirements:
+- Bind the daemon to localhost and expose it through an **HTTPS reverse proxy** or private network.
+- Mount `SYNAPSE_ADMIN_API_KEY` as a Docker/Kubernetes secret file, not a plain env var (see `kryptodb-compose.yml`).
+- API key creation is **rejected** if the requested scope's customer encryption key is not configured.
+- Restrict or disable the `/admin/api-keys` route after initial provisioning where practical.
+
+The raw API key is returned once and written to the output file. API keys are authentication credentials, not encryption keys.
 
 ### Legacy Migration
 

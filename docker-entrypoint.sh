@@ -7,6 +7,14 @@ set -e
 
 MODE="${1:-web}"
 
+# ── Secret file support ───────────────────────────────────────────────────────
+# Read SYNAPSE_ADMIN_API_KEY from a file when SYNAPSE_ADMIN_API_KEY_FILE is set.
+# This keeps the raw key out of the environment and process listing.
+if [ -n "$SYNAPSE_ADMIN_API_KEY_FILE" ] && [ -f "$SYNAPSE_ADMIN_API_KEY_FILE" ]; then
+    SYNAPSE_ADMIN_API_KEY="$(cat "$SYNAPSE_ADMIN_API_KEY_FILE")"
+    export SYNAPSE_ADMIN_API_KEY
+fi
+
 # ── Production guard ──────────────────────────────────────────────────────────
 if [ "${SYNAPSE_ENV:-development}" = "production" ]; then
     if [ -z "$SYNAPSE_MASTER_KEY" ]; then
@@ -14,10 +22,11 @@ if [ "${SYNAPSE_ENV:-development}" = "production" ]; then
         exit 1
     fi
     if [ -z "$SYNAPSE_ADMIN_API_KEY" ]; then
-        echo "FATAL: SYNAPSE_ADMIN_API_KEY is required in production mode." >&2
+        echo "FATAL: SYNAPSE_ADMIN_API_KEY (or SYNAPSE_ADMIN_API_KEY_FILE) is required in production mode." >&2
         exit 1
     fi
 fi
+
 
 case "$MODE" in
     web)

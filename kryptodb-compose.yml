@@ -71,10 +71,14 @@ services:
       NEO4J_PASSWORD: "${NEO4J_PASSWORD:-changeme}"
       REDIS_URL: "redis://redis:6379/0"
       SYNAPSE_MASTER_KEY: "${SYNAPSE_MASTER_KEY}"
-      SYNAPSE_ADMIN_API_KEY: "${SYNAPSE_ADMIN_API_KEY}"
-      # Mount customer scope keys as a secret file (recommended) or inline JSON
+      # SYNAPSE_ADMIN_API_KEY is NOT passed as an env var in production.
+      # It is mounted as a Docker secret file read by the daemon at startup.
+      # For local development only, you may set SYNAPSE_ADMIN_API_KEY as an env var.
+      SYNAPSE_ADMIN_API_KEY_FILE: "/run/secrets/synapse-admin-key.txt"
+      # Customer scope keys are always mounted as a secret file.
       SYNAPSE_SCOPE_KEYS_FILE: "/run/secrets/synapse-scope-keys.json"
     secrets:
+      - synapse-admin-key.txt
       - synapse-scope-keys.json
     volumes:
       - kryptodb_data:/data
@@ -94,7 +98,20 @@ volumes:
   kryptodb_data:
 
 # ── Secrets (Docker secret files) ─────────────────────────────────────────────
-# Create: printf '{"research":{"key_id":"research:v1","key":"<base64-32-bytes>"}}' > synapse-scope-keys.json
+# Create admin key file:
+#   printf 'your-admin-key-value' > synapse-admin-key.txt && chmod 600 synapse-admin-key.txt
+#
+# After first startup, bootstrap an agent key instead of using curl:
+#   synapse bootstrap \
+#     --agent-id Agent-1 --scopes research \
+#     --admin-key-file synapse-admin-key.txt \
+#     --out-file agent-key.txt
+#
+# Create scope keys file:
+#   printf '{"research":{"key_id":"research:v1","key":"<base64-32-bytes>"}}' \
+#     > synapse-scope-keys.json && chmod 600 synapse-scope-keys.json
 secrets:
+  synapse-admin-key.txt:
+    file: ./synapse-admin-key.txt
   synapse-scope-keys.json:
     file: ./synapse-scope-keys.json
