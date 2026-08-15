@@ -40,8 +40,9 @@ Searchable encryption introduces inherent side channels. KryptoDB intentionally 
 KryptoDB operates as an intermediary broker between LLM agents and the encrypted graph:
 1. **Agent** sends an MCP tool call (e.g. `query_memory_tool`) to the local MCP client.
 2. **MCP Client** forwards the request to the central **Daemon** via HTTPS with a bearer API key.
-3. **Daemon** computes HMAC indexes for the query and searches **Neo4j** (Search-before-decrypt).
-4. **Neo4j** returns candidate ciphertexts.
+3. **Daemon** computes HMAC indexes for the query terms and executes a **Search-before-decrypt** cypher query against **Neo4j**. 
+   *(Note: KryptoDB utilizes deterministic HMAC-based searchable encryption algorithms to perform exact-match and token-based lookups directly on ciphertext indexes without revealing the search query to the database.)*
+4. **Neo4j** returns candidate ciphertexts matching the cryptographic hashes.
 5. **Daemon** drops unauthorized candidates, decrypts the remainder using the active session scope key, and returns plaintext to the Agent.
 
 ![System Architecture](ui/public/structure.png)
