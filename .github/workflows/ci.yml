@@ -1,0 +1,149 @@
+name: Build, Test & Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/kryptodb
+
+jobs:
+  # ── Backend tests ────────────────────────────────────────────────────────
+  test-backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[test]" \
+            fastapi uvicorn neo4j redis pydantic pydantic-settings \
+            cryptography mcp pytest pytest-asyncio httpx
+
+      - name: Compile check
+        run: python -m compileall -q synapse
+
+      - name: Run unit tests
+        run: pytest -q tests/unit/ --tb=short
+        env:
+          SYNAPSE_ENV: development
+
+  # ── Frontend build ──────────────────────────────────────────────────────
+  build-frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI deps
+        run: npm ci --ignore-scripts
+        working-directory: ui
+
+      - name: Build Next.js (standalone)
+        run: npm run build
+        working-directory: ui
+        env:
+          NEXT_PUBLIC_SYNAPSE_URL: ""
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  # ── Docker image ─────────────────────────────────────────────────────────
+  build-image:
+    name: Build & push Docker image
+    needs: [test-backend, build-frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+  # ── Compose smoke test ───────────────────────────────────────────────────
+  smoke-test:
+    name: Docker Compose smoke test
+    needs: build-image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write test env
+        run: |
+          cat > .env <<'EOF'
+          SYNAPSE_ENV=development
+          NEO4J_PASSWORD=testpassword
+          NEO4J_URI=bolt://neo4j:7687
+          NEO4J_USER=neo4j
+          REDIS_URL=redis://redis:6379/0
+          SYNAPSE_MASTER_KEY=${{ secrets.SYNAPSE_TEST_MASTER_KEY || '0000000000000000000000000000000000000000000000000000000000000000' }}
+          SYNAPSE_ADMIN_API_KEY=test-admin-key
+          KRYPTODB_VERSION=sha-${{ github.sha }}
+          EOF
+
+      - name: Create dummy scope keys file
+        run: echo '{}' > synapse-scope-keys.json
+
+      - name: Start services
+        run: docker compose -f kryptodb-compose.yml up -d --wait
+        timeout-minutes: 3
+
+      - name: Health check
+        run: |
+          curl -f http://localhost:8000/health || (docker compose -f kryptodb-compose.yml logs && exit 1)
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f kryptodb-compose.yml down -v

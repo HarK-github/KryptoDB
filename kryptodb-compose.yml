@@ -1,0 +1,100 @@
+# KryptoDB — Production Compose File
+# Usage: docker compose -f kryptodb-compose.yml up -d
+#
+# Before first run:
+#   1. Copy .env.example to .env and fill in secrets
+#   2. Create synapse-scope-keys.json with your scope key definitions (see README)
+#
+# MCP client snippet:
+#   docker run -i --rm --env-file .env \
+#     -e SYNAPSE_API_KEY=syn_live_<key> \
+#     -e SYNAPSE_URL=http://kryptodb:8000 \
+#     --network kryptodb_default \
+#     ghcr.io/prolomaster/kryptodb:latest mcp
+
+name: kryptodb
+
+services:
+
+  # ── Neo4j ─────────────────────────────────────────────────────────────────
+  neo4j:
+    image: neo4j:5.21.2-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:-changeme}"
+      NEO4J_server_memory_heap_initial__size: "512m"
+      NEO4J_server_memory_heap_max__size: "1G"
+    volumes:
+      - neo4j_data:/data
+    # Bolt is internal only; expose browser port only for development
+    expose:
+      - "7687"
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD:-changeme}", "RETURN 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis_data:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── KryptoDB application ──────────────────────────────────────────────────
+  kryptodb:
+    image: ghcr.io/prolomaster/kryptodb:${KRYPTODB_VERSION:-latest}
+    # For local builds: uncomment the lines below and comment out `image:`
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SYNAPSE_ENV: "${SYNAPSE_ENV:-production}"
+      NEO4J_URI: "bolt://neo4j:7687"
+      NEO4J_USER: "neo4j"
+      NEO4J_PASSWORD: "${NEO4J_PASSWORD:-changeme}"
+      REDIS_URL: "redis://redis:6379/0"
+      SYNAPSE_MASTER_KEY: "${SYNAPSE_MASTER_KEY}"
+      SYNAPSE_ADMIN_API_KEY: "${SYNAPSE_ADMIN_API_KEY}"
+      # Mount customer scope keys as a secret file (recommended) or inline JSON
+      SYNAPSE_SCOPE_KEYS_FILE: "/run/secrets/synapse-scope-keys.json"
+    secrets:
+      - synapse-scope-keys.json
+    volumes:
+      - kryptodb_data:/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  neo4j_data:
+  redis_data:
+  kryptodb_data:
+
+# ── Secrets (Docker secret files) ─────────────────────────────────────────────
+# Create: printf '{"research":{"key_id":"research:v1","key":"<base64-32-bytes>"}}' > synapse-scope-keys.json
+secrets:
+  synapse-scope-keys.json:
+    file: ./synapse-scope-keys.json

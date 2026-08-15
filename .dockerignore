@@ -1,0 +1,49 @@
+# Docker build exclusions
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# UI dev artifacts
+ui/node_modules/
+ui/.next/
+ui/out/
+
+# Runtime data (never bake into image)
+data/audit.db
+daemon.log
+.daemon.pid
+synapse-scope-keys.json
+
+# Scratch / dev scripts
+*.excalidraw
+*.excalidraw.svg
+structure.png
+Progress.md
+TESTING.md
+concept.md
+idea_improv.md
+inmp.md
+insp.tsx
+themeismp.css
+resume.tex
+parse_*.py
+fix_*.py
+update_*.py
+seed_*.py
+load_test_graph.py
+run_checks*.py
+run_latency_test.py
+llm_agent.py
+test.py
+tests/
+check_results.json

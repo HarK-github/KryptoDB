@@ -2,11 +2,14 @@
 Unified KryptoDB Daemon server.
 """
 from fastapi import FastAPI, HTTPException, APIRouter, BackgroundTasks, Depends, Header
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from typing import List
 import logging
+import os
 import uvicorn
+from pathlib import Path
 
 from synapse.daemon.keyring import keyring
 from synapse.integrity.partition_crypto import Encryptor
@@ -842,5 +845,34 @@ def list_api_keys(context: AuthContext = Depends(require_admin)):
 
 app.include_router(router)
 
+# ── Optional: serve built Next.js frontend from same origin ──────────────────
+# When running inside the Docker image the standalone build is copied to
+# /app/ui-server. Mount it so the browser hits http://localhost:8000/ directly.
+_UI_SERVER_DIR = Path(__file__).parent.parent.parent / "ui-server"
+
+if _UI_SERVER_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles
+    # Static assets (JS, CSS, images)
+    _static = _UI_SERVER_DIR / ".next" / "static"
+    if _static.is_dir():
+        app.mount("/_next/static", StaticFiles(directory=str(_static)), name="next-static")
+    _public = _UI_SERVER_DIR / "public"
+    if _public.is_dir():
+        app.mount("/public", StaticFiles(directory=str(_public)), name="public")
+
+    # Fallback: serve Next.js index for any unmatched route (SPA behaviour)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend(full_path: str):
+        # API and WS routes are matched before this wildcard
+        index = _UI_SERVER_DIR / "server" / "app" / "index.html"
+        if not index.exists():
+            index = _UI_SERVER_DIR / "server" / "pages" / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+        return FileResponse(str(_UI_SERVER_DIR / "public" / "index.html"))
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
+
