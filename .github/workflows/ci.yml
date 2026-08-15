@@ -32,12 +32,12 @@ jobs:
             cryptography mcp pytest pytest-asyncio httpx
 
       - name: Compile check
-        run: python -m compileall -q synapse
+        run: python -m compileall -q kryptodb
 
       - name: Run unit tests
         run: pytest -q tests/unit/ --tb=short
         env:
-          SYNAPSE_ENV: development
+          KRYPTODB_ENV: development
 
   # ── Frontend build ──────────────────────────────────────────────────────
   build-frontend:
@@ -61,7 +61,7 @@ jobs:
         run: npm run build
         working-directory: ui
         env:
-          NEXT_PUBLIC_SYNAPSE_URL: ""
+          NEXT_PUBLIC_KRYPTODB_URL: ""
           NEXT_TELEMETRY_DISABLED: "1"
 
   # ── Docker image ─────────────────────────────────────────────────────────
@@ -123,18 +123,18 @@ jobs:
       - name: Write test env
         run: |
           cat > .env <<'EOF'
-          SYNAPSE_ENV=development
+          KRYPTODB_ENV=development
           NEO4J_PASSWORD=testpassword
           NEO4J_URI=bolt://neo4j:7687
           NEO4J_USER=neo4j
           REDIS_URL=redis://redis:6379/0
-          SYNAPSE_MASTER_KEY=${{ secrets.SYNAPSE_TEST_MASTER_KEY || '0000000000000000000000000000000000000000000000000000000000000000' }}
-          SYNAPSE_ADMIN_API_KEY=test-admin-key
+          KRYPTODB_MASTER_KEY=${{ secrets.KRYPTODB_TEST_MASTER_KEY || '0000000000000000000000000000000000000000000000000000000000000000' }}
+          KRYPTODB_ADMIN_API_KEY=test-admin-key
           KRYPTODB_VERSION=sha-${{ github.sha }}
           EOF
 
       - name: Create dummy scope keys file
-        run: echo '{}' > synapse-scope-keys.json
+        run: echo '{}' > kryptodb-scope-keys.json
 
       - name: Start services
         run: docker compose -f kryptodb-compose.yml up -d --wait

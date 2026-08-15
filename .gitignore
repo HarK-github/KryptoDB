@@ -1,4 +1,13 @@
 __pycache__/
 *.pyc
 .venv/
-synapse.egg-info/
+.env
+*.secret
+data/scope-keys.json
+kryptodb.egg-info/
+.daemon.pid
+daemon.log
+*.db
+*-keys.json
+*.pyc
+__pycache__/

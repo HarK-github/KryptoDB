@@ -12,9 +12,9 @@ RUN npm ci --ignore-scripts
 
 # Copy source and build in standalone mode
 COPY ui/ ./
-# NEXT_PUBLIC_SYNAPSE_URL is empty string intentionally:
+# NEXT_PUBLIC_KRYPTODB_URL is empty string intentionally:
 # the browser hits the same origin (/api/* is proxied by Next.js)
-ENV NEXT_PUBLIC_SYNAPSE_URL=""
+ENV NEXT_PUBLIC_KRYPTODB_URL=""
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
@@ -31,7 +31,7 @@ RUN pip install --no-cache-dir build wheel
 # Copy only dependency declaration first for layer caching
 COPY pyproject.toml ./
 # Stub the package so pip can resolve the install target
-RUN mkdir -p synapse && touch synapse/__init__.py
+RUN mkdir -p kryptodb && touch kryptodb/__init__.py
 
 # Install into a prefix we can copy cleanly
 RUN pip install --no-cache-dir --prefix=/install \
@@ -56,11 +56,11 @@ WORKDIR /app
 COPY --from=python-builder /install /usr/local
 
 # Application source (no .env, no test fixtures, no secrets)
-COPY synapse/ ./synapse/
+COPY kryptodb/ ./kryptodb/
 COPY data/ ./data/
 COPY pyproject.toml ./
 
-# Install the package in editable mode (uses synapse/ dir, no build artifacts)
+# Install the package in editable mode (uses kryptodb/ dir, no build artifacts)
 RUN pip install --no-cache-dir --no-deps -e .
 
 # Frontend — Next.js standalone build

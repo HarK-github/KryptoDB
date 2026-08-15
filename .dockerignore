@@ -22,7 +22,7 @@ ui/out/
 data/audit.db
 daemon.log
 .daemon.pid
-synapse-scope-keys.json
+kryptodb-scope-keys.json
 
 # Scratch / dev scripts
 *.excalidraw

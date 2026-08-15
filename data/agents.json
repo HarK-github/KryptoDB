@@ -11,7 +11,7 @@
     "trust_prior": 0.8,
     "allowed_scopes": [
       "research",
-      "PROJECT:synapse"
+      "PROJECT:kryptodb"
     ]
   },
   "": {
