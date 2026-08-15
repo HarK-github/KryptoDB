@@ -13,6 +13,12 @@ KryptoDB is a graph-based memory server for multi-agent systems, exposing its kn
 
 ---
 
+<div align="center">
+  <img src="image-1.png" alt="KryptoDB Web Dashboard" style="max-width: 100%" />
+</div>
+
+---
+
 ## 🔒 Security Model & Residual Trust
 
 KryptoDB isolates knowledge between agents using envelope encryption. Every new fact receives a fresh random Data Encryption Key (DEK), wrapped by a stable Key Encryption Key (KEK) tied to a specific permission scope. Agents never receive DEKs or KEKs; the daemon decrypts only authorized final candidates.
@@ -57,28 +63,10 @@ KryptoDB operates as an intermediary broker between LLM agents and the encrypted
 - *(SQLite is bundled internally by the daemon for lightweight state tracking, no setup required).*
 
 ### 1. Start the backend
-Clone the repo and configure the minimal environment:
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
+Ensure Docker is installed, then launch the production stack (which includes KryptoDB, Neo4j, and Redis) in detached mode:
 
-Create a `.env` file (minimal local setup):
-```env
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=password
-REDIS_URL=redis://localhost:6379/0
-KRYPTODB_MASTER_KEY=b2c4d6e8f0a2c4d6e8f0a2c4d6e8f0a2c4d6e8f0a2c4d6e8f0a2c4d6e8f0a2c4
-KRYPTODB_ADMIN_API_KEY=dev-admin-key
-# DO NOT USE THIS FLAG IN PRODUCTION:
-KRYPTODB_BOOTSTRAP_UNENCRYPTED=true
-```
-
-Launch the daemon:
 ```bash
-uvicorn kryptodb.daemon.server:app --host 127.0.0.1 --port 8000
+docker compose -f kryptodb-compose.yml up -d
 ```
 *The web UI is now accessible at http://127.0.0.1:8000.*
 
@@ -93,20 +81,25 @@ curl -X POST http://127.0.0.1:8000/admin/api-keys \
 *Note the returned `api_key`.*
 
 ### 3. Connect via MCP (Claude Desktop / Cursor / Codex)
-Add the native Python MCP server to your IDE/client configuration, replacing `<paste-api-key>` with the key from the previous step:
+Add the Docker MCP server to your IDE/client configuration, replacing `<paste-api-key>` with the key from the previous step:
 
 **JSON Format (Claude / Cursor):**
 ```json
 {
   "mcpServers": {
     "kryptodb": {
-      "command": "/absolute/path/to/AIAgent/.venv/bin/python",
-      "args": ["-m", "kryptodb.daemon.mcp_server"],
-      "env": {
-        "AGENT_ID": "Agent-1",
-        "KRYPTODB_API_KEY": "<paste-api-key>",
-        "KRYPTODB_URL": "http://127.0.0.1:8000"
-      }
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network", "aiagent_default",
+        "-e", "AGENT_ID=Agent-1",
+        "-e", "KRYPTODB_API_KEY=<paste-api-key>",
+        "-e", "KRYPTODB_URL=http://daemon:8000",
+        "ghcr.io/prolomaster/kryptodb:latest",
+        "mcp"
+      ]
     }
   }
 }
@@ -115,13 +108,18 @@ Add the native Python MCP server to your IDE/client configuration, replacing `<p
 **TOML Format (RooCode / Windsurf / Codex):**
 ```toml
 [mcp_servers.kryptodb]
-command = "/absolute/path/to/AIAgent/.venv/bin/python"
-args = ["-m", "kryptodb.daemon.mcp_server"]
-
-[mcp_servers.kryptodb.env]
-AGENT_ID = "Agent-1"
-KRYPTODB_API_KEY = "<paste-api-key>"
-KRYPTODB_URL = "http://127.0.0.1:8000"
+command = "docker"
+args = [
+  "run",
+  "-i",
+  "--rm",
+  "--network", "aiagent_default",
+  "-e", "AGENT_ID=Agent-1",
+  "-e", "KRYPTODB_API_KEY=<paste-api-key>",
+  "-e", "KRYPTODB_URL=http://daemon:8000",
+  "ghcr.io/prolomaster/kryptodb:latest",
+  "mcp"
+]
 ```
 
 ---
