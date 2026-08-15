@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="image.png" alt="KryptoDB Logo" width="100" height="100" />
+  <img src="./image.png?v=1" alt="KryptoDB Logo" width="100" height="100" />
   <h1>KryptoDB</h1>
   <p><i>Multi-Agent Memory Access Control on Neo4j</i></p>
   <img src="https://img.shields.io/badge/Python-3.10%2B-blue" alt="Python 3.10+">
@@ -12,7 +12,7 @@ KryptoDB is a graph-based memory server for multi-agent systems, exposing its kn
 ---
 
 <div align="center">
-  <img src="image-1.png" alt="KryptoDB Web Dashboard" style="max-width: 100%" />
+  <img src="./image-1.png?v=1" alt="KryptoDB Web Dashboard" style="max-width: 100%" />
 </div>
 
 ---
