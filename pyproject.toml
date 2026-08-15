@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "synapse"
+name = "kryptodb"
 version = "0.1.0"
 description = "A trust-brokered, temporally-aware, partition-encrypted memory substrate for multi-agent systems."
 dependencies = [
@@ -22,4 +22,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["synapse*"]
+include = ["kryptodb*"]
