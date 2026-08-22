@@ -11,3 +11,36 @@ daemon.log
 *-keys.json
 *.pyc
 __pycache__/
+
+# Scratch files and temporary scripts
+*.excalidraw
+*.excalidraw.svg
+*.tex
+Untitled*.png
+Progress.md
+TESTING.md
+check_results.json
+code.txt
+concept.md
+findings.md
+idea_improv.md
+inmp.md
+logs.txt
+theme.md
+themeismp.css
+scratch/
+
+# Temporary python scripts
+extract_chat.py
+fix_*.py
+llm_agent.py
+load_test_graph.py
+parse_*.py
+patch_agents_view.py
+rename_script.py
+run_*.py
+seed_*.py
+test_*.py
+test.py
+update_*.py
+insp.tsx
