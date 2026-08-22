@@ -9,6 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@react-three/drei": "^10.7.8",
+    "@react-three/fiber": "^9.7.0",
+    "@types/three": "^0.185.4",
     "graphology": "^0.26.0",
     "graphology-layout-forceatlas2": "^0.10.1",
     "graphology-types": "^0.24.8",
@@ -17,7 +20,8 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "reconnecting-websocket": "^4.4.0",
-    "sigma": "^3.0.3"
+    "sigma": "^3.0.3",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

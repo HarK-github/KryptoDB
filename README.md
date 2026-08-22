@@ -9,9 +9,20 @@
 
 KryptoDB is a graph-based memory server for multi-agent systems, exposing its knowledge substrate via the Model Context Protocol (MCP). It enforces strict access boundaries using per-knowledge AES-256-GCM envelope encryption, API-key identity, and session activation gates.
 
+## 🛠 Technologies Used
+*   **Backend:** Python, FastAPI, SQLite, Redis, WebSocket
+*   **Frontend:** React, Next.js, TypeScript
+*   **AI & Agents:** LangGraph, Large Language Models (LLMs), Model Context Protocol (MCP)
+*   **Database & Storage:** Neo4j (Graph Database), Redis (Caching)
+*   **Security:** AES-256-GCM Envelope Encryption, HMAC indexing, API-key Identity
+
 ---
 
 <div align="center">
+  <video width="100%" controls autoplay loop muted>
+    <source src="./resources/demo.mp4" type="video/mp4">
+  </video>
+  <br />
   <img src="./image-1.png?v=1" alt="KryptoDB Web Dashboard" style="max-width: 100%" />
 </div>
 
@@ -41,6 +52,16 @@ KryptoDB operates as an intermediary broker between LLM agents and the encrypted
 ![System Architecture](ui/public/structure.png)
 
 *Note: Ephemeral clustering (Louvain community detection) can be invoked by setting `mode='global'` on queries, which temporarily projects the graph into Neo4j RAM and instantly destroys it after summarization to protect memory limits.*
+
+---
+
+## 🌟 Key Features
+
+*   **Full-Stack AI Agent Dashboard:** A polished React and Next.js frontend integrating an interactive Chat Interface, enabling seamless conversations with the graph-powered agent.
+*   **Transparent Tool Calling & Streaming:** The WebSocket-powered chat interface streams agent thought processes, real-time LLM tool invocations, and responses with automatic reconnection logic and graceful error handling.
+*   **Persistent Agent State:** Integrated durable SQLite-backed LangGraph checkpointer for robust session persistence across container restarts.
+*   **Asynchronous Human-in-the-Loop (HITL):** Fully asynchronous, non-blocking FastAPI endpoints for reviewing, approving, or rejecting sensitive agent writes to the graph database.
+*   **Cryptographic Memory Partitioning:** Strict AES-256-GCM envelope encryption guarantees agents can only traverse and recall nodes within their authorized scopes.
 
 ---
 

@@ -86,7 +86,7 @@ button {
   min-height: 100vh;
   padding: 22px 14px 15px;
   border-right: 1px solid var(--border);
-  background: rgba(13, 14, 18, .88);
+  background: #0d0e12;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -123,7 +123,7 @@ button {
 .workspace button, .workspace-value {
   width: 100%;
   border: 1px solid var(--border);
-  background: #14161b;
+  background: #14161b; 
   color: #d9dbe4;
   padding: 9px 10px;
   border-radius: 6px;
@@ -255,6 +255,7 @@ nav button.active {}
   gap: 14px;
   padding: 0 31px;
   border-bottom: 1px solid var(--border);
+  background: #0d0e12;
 }
 
 .global-search {
@@ -262,7 +263,7 @@ nav button.active {}
   align-items: center;
   gap: 10px;
   color: #8b8e9a;
-  background: #111318;
+  background: #111318; 
   border: 1px solid var(--border);
   border-radius: 8px;
   height: 34px;
@@ -319,7 +320,7 @@ nav button.active {}
 .ui-button {
   border: 1px solid var(--border);
   color: #bfc1ca;
-  background: #17191f;
+  background: #17191f; 
   min-height: 32px;
   padding: 0 10px;
   border-radius: 7px;
@@ -443,7 +444,7 @@ h1 {
 .panel,
 .infra-card {
   border: 1px solid var(--border);
-  background: #101217;
+  background: #101217; 
   border-radius: 10px;
   overflow: hidden;
 }
@@ -456,8 +457,8 @@ h1 {
   z-index: 10;
   max-height: calc(100% - 20px);
   overflow-y: auto;
-  background: rgba(16, 18, 23, 0.85);
-  backdrop-filter: blur(12px);
+  background: #101217;
+  
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -466,7 +467,7 @@ h1 {
 .graph-wrap {
   height: 100%;
   position: relative;
-  background: #0e1015;
+  background: #0e1015; 
   border: none;
   border-top: 1px solid var(--border);
   border-radius: 0;
@@ -578,7 +579,7 @@ h1 {
   align-items: center;
   gap: 6px;
   border: 1px solid var(--border);
-  background: #17191f;
+  background: #17191f; 
   padding: 0 8px;
   border-radius: 7px;
   color: #a3a6b1;
@@ -697,7 +698,7 @@ select {
 .inspector {
   padding: 19px;
   min-height: 535px;
-  background: #121419;
+  background: #121419; 
 }
 
 .empty-inspector {
@@ -834,7 +835,7 @@ select {
   margin-bottom: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #111318;
+  background: #111318; 
 }
 
 .stats-strip>div {
@@ -874,7 +875,7 @@ select {
 }
 
 .panel {
-  background: #111318;
+  background: #111318; 
 }
 
 .live-agents-panel {
@@ -1284,7 +1285,7 @@ select {
 .filter-row select,
 .agent-select {
   border: 1px solid var(--border);
-  background: #17191f;
+  background: #17191f; 
   color: #aaaeb9;
   border-radius: 7px;
   padding: 8px 10px;
@@ -1601,7 +1602,7 @@ select {
   justify-content: center;
   padding-top: 17vh;
   background: rgba(0, 0, 0, .62);
-  backdrop-filter: blur(5px);
+  
 }
 
 .palette {
@@ -1754,7 +1755,7 @@ h1 {
 .graph-wrap {
   border: 0;
   border-radius: 0;
-  background: radial-gradient(ellipse at 48% 50%, rgba(33, 53, 58, .32), transparent 49%), #0e1015;
+  background: #0e1015;
 }
 
 .graph-glow {
@@ -1765,7 +1766,7 @@ h1 {
 .graph-toolbar {
   border-radius: 999px;
   background: rgba(17, 19, 24, .72);
-  backdrop-filter: blur(14px);
+  
 }
 
 .stats-strip {
@@ -2018,7 +2019,7 @@ h1 {
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
   animation: floatingPopupIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-  backdrop-filter: blur(16px);
+  
 }
 
 .agent-activity-floating-popup.is-dragging {

@@ -134,6 +134,7 @@ def create_recall_node(llm: Optional[Any] = None, store: Optional[KryptoDBStore]
                         content=(
                             f"You are KryptoDB Agent '{state.agent_id}'. You have access to encrypted memory graph partitions: [{scopes_desc}].\n"
                             f"Call `query_memory_tool` to search for relevant memory facts across your authorized partitions before answering.\n"
+                            f"CRITICAL: To ensure you find the necessary information, you SHOULD make multiple parallel tool calls to `query_memory_tool` using different wordings, synonyms, and sub-queries.\n"
                             f"You may specify `requested_scope` to target a specific partition, or pass None to search across all authorized partitions."
                         )
                     )

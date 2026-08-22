@@ -38,6 +38,8 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
     const [isSending, setIsSending] = useState(false)
     const [threadId, setThreadId] = useState<string>('')
     const [currentScope, setCurrentScope] = useState('AUTO')
+    const currentScopeRef = useRef(currentScope)
+    useEffect(() => { currentScopeRef.current = currentScope }, [currentScope])
     const [availableScopes, setAvailableScopes] = useState<string[]>(['AUTO', 'research', 'PROJECT:synapse', 'PROJECT:kryptodb'])
     const [showScopePicker, setShowScopePicker] = useState(false)
     const [agentsData, setAgentsData] = useState<Record<string, BackendAgent>>({})
@@ -158,7 +160,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                 const pf = data.fact || {}
                 setPendingFact({
                     tuple: pf.fact_tuple ? `(${pf.fact_tuple.join(', ')})` : (pf.description ? pf.description : `(${pf.subject || 'Entity'}, ${pf.predicate || 'PREDICATE'}, ${pf.obj || 'Object'})`),
-                    scope: pf.scope || currentScope
+                    scope: pf.scope || currentScopeRef.current
                 })
                 setIsSending(false)
             } else if (data.type === 'error') {
@@ -191,7 +193,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
         }
         
         return () => ws.close()
-    }, [threadId, currentScope, wsRetryCount])
+    }, [threadId, wsRetryCount])
 
     // Dragging & Resizing States
     const [position, setPosition] = useState<{ x: number; y: number } | null>(null)

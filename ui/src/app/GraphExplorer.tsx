@@ -95,10 +95,7 @@ export default function LiveGraph({ selected, onSelect }: any) {
       ctx.beginPath();
       ctx.arc(x, y, 4, 0, 2 * Math.PI);
       ctx.fillStyle = '#f8fafc';
-      ctx.shadowColor = '#93c5fd';
-      ctx.shadowBlur = 10;
       ctx.fill();
-      ctx.shadowBlur = 0;
     });
   }, [graph]);
 
@@ -128,7 +125,7 @@ export default function LiveGraph({ selected, onSelect }: any) {
         y: Math.random() * 100,
         size: 6,
         color: getScopeColor(safeAttributes.scope),
-        label: id
+        label: id.length > 24 ? id.substring(0, 8) + '...' + id.substring(id.length - 6) : id
       });
     } else {
       graph.mergeNodeAttributes(id, { ...safeAttributes, kind });
@@ -179,6 +176,9 @@ export default function LiveGraph({ selected, onSelect }: any) {
       renderEdgeLabels: false,
       defaultEdgeColor: "#888888",
       allowInvalidContainer: true,
+      labelColor: { color: "#f8fafc" },
+      labelBgColor: { color: "#0e1015" },
+      defaultNodeHoverColor: "#0e1015",
     });
     sigmaRef.current = sigma;
 
