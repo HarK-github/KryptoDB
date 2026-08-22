@@ -1,3 +1,4 @@
+import kryptodb
 from sentence_transformers import SentenceTransformer
 import os
 

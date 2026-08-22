@@ -27,7 +27,12 @@ class ReadEngine:
         bootstrap_mode = bootstrap_enabled()
 
         # 1 & 2: Intersect Permission and Activation Gates
-        active_partitions = list((self.session_keyring or keyring)._keys.keys())
+        sk = self.session_keyring or keyring
+        sk_keys = getattr(sk, "_keys", getattr(sk, "keys", {}))
+        active_partitions = list(sk_keys.keys()) if isinstance(sk_keys, dict) else list(sk_keys)
+        if not active_partitions and keyring._keys:
+            active_partitions = list(keyring._keys.keys())
+
         if bootstrap_mode:
             effective_scopes = list(set(allowed_scopes))
         else:
@@ -94,31 +99,26 @@ class ReadEngine:
                 params = {"scopes": effective_scopes, "query_indexes": query_indexes, "query_str": query_str}
             else:
                 if not query_indexes:
+                    # Without encrypted search tokens there is no safe way
+                    # to establish relevance. Returning arbitrary facts here
+                    # would contaminate the model's context.
                     return []
-                query = """
-                MATCH (s)-[r:FACT]->(o)
-                WHERE ANY(idx IN coalesce(r.search_indexes, []) WHERE idx IN $query_indexes)
-                  AND r.permission_scope IN $scopes
-                  AND r.valid_to IS NULL AND r.revoked_at IS NULL
-                RETURN s, r, o
-                ORDER BY r.trust_weight DESC
-                LIMIT 10
-                """
-                params = {"scopes": effective_scopes, "query_indexes": query_indexes}
+                else:
+                    query = """
+                    MATCH (s)-[r:FACT]->(o)
+                    WHERE ANY(idx IN coalesce(r.search_indexes, []) WHERE idx IN $query_indexes)
+                      AND r.permission_scope IN $scopes
+                      AND r.valid_to IS NULL AND r.revoked_at IS NULL
+                    RETURN s, r, o
+                    ORDER BY r.trust_weight DESC
+                    LIMIT 10
+                    """
+                    params = {"scopes": effective_scopes, "query_indexes": query_indexes}
             
         else:
             # Fallback if args missing
-            query = """
-            MATCH (s)-[r:FACT]->(o)
-            WHERE r.permission_scope IN $scopes
-              AND r.valid_to IS NULL
-              AND r.revoked_at IS NULL
-            RETURN s, r, o
-            ORDER BY r.trust_weight DESC
-            LIMIT 10
-            """
-            params = {"scopes": effective_scopes}
-        
+            return []
+
         import uuid
         request_id = str(uuid.uuid4())
         
@@ -127,6 +127,10 @@ class ReadEngine:
                 records, _, _ = neo4j_client.execute_query_with_retry(query, **params)
             else:
                 records, _, _ = neo4j_client.driver.execute_query(query, **params)
+
+            # An empty indexed result means that no graph fact matched the
+            # query. Do not broaden this into an unrelated graph scan: those
+            # facts would be presented to the model as out-of-context answers.
         except Exception:
             return []
             
@@ -140,6 +144,7 @@ class ReadEngine:
         from kryptodb.memory_api.session_search import session_index
         active_search_index = self.session_search_index or session_index
         results = []
+        traversal_path = []
         for step_idx, record in enumerate(records):
             s_node = record["s"]
             o_node = record["o"]
@@ -147,22 +152,11 @@ class ReadEngine:
             
             scope = r_edge["permission_scope"]
             
-            if loop:
-                try:
-                    ev = GraphEvent(
-                        event_type="traversal_step",
-                        permission_scope=scope,
-                        timestamp=datetime.now(timezone.utc),
-                        edge_id=r_edge.get("id"),
-                        source_id=s_node.get("id"),
-                        target_id=o_node.get("id"),
-                        trust_weight=r_edge.get("trust_weight", 0.5),
-                        request_id=request_id,
-                        step_index=step_idx
-                    )
-                    loop.create_task(event_bus.publish(ev))
-                except Exception:
-                    pass
+            traversal_path.append({
+                "edgeId": str(r_edge.get("id")),
+                "sourceId": str(s_node.get("id")),
+                "targetId": str(o_node.get("id")),
+            })
             
             
             # 4. Decrypt content fields using Encryptor
@@ -227,5 +221,20 @@ class ReadEngine:
             
             # Milestone 8.4 Phase A: Index into transient Bloom Filter for future substring search
             active_search_index.add_edge(edge_dict)
+
+        # Do not expose partial query results as traversal events. The graph
+        # client receives one ordered path only after the full query has been
+        # read and decrypted.
+        if loop and traversal_path:
+            try:
+                loop.create_task(event_bus.publish(GraphEvent(
+                    event_type="traversal_complete",
+                    permission_scope=str(traversal_path and records[0]["r"].get("permission_scope", "research")),
+                    timestamp=datetime.now(timezone.utc),
+                    request_id=request_id,
+                    traversal_path=traversal_path,
+                )))
+            except Exception:
+                pass
             
         return results

@@ -22,11 +22,14 @@ class WriteEngine:
         import json
         from kryptodb.integrity.partition_crypto import Encryptor
         from kryptodb.integrity.bootstrap_state import is_enabled as bootstrap_enabled
+        from kryptodb.daemon.keyring import keyring
         encryptor = Encryptor()
         
         bootstrap_mode = bootstrap_enabled()
-        has_key = edge.permission_scope in encryptor.scope_keys or (
-            not encryptor.customer_keys_required and not bootstrap_mode
+        has_key = (
+            edge.permission_scope in encryptor.scope_keys or
+            keyring.get_key(edge.permission_scope) is not None or
+            (not encryptor.customer_keys_required and not bootstrap_mode)
         )
         
         is_pending = False

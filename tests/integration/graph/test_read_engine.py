@@ -3,6 +3,7 @@ from kryptodb.graph.read_engine import ReadEngine
 from kryptodb.daemon.keyring import keyring
 
 def test_read_engine_respects_activation_gate(monkeypatch):
+    monkeypatch.delenv("KRYPTODB_BOOTSTRAP_UNENCRYPTED", raising=False)
     class MockNeo4jClient:
         def __init__(self):
             self.driver = self
