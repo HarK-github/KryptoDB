@@ -1,6 +1,7 @@
 'use client'
+import AgentActivityModal from './ChatPopup'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
     Activity,
     ArrowDownToLine,
@@ -18,18 +19,22 @@ import {
     Filter,
     Gauge,
     GitBranch,
+    GripHorizontal,
     KeyRound,
     LayoutDashboard,
     Lock,
     LogOut,
     Maximize2,
     Menu,
+    Move,
     Network,
     PanelRight,
     Play,
     Plus,
     RefreshCw,
+    RotateCcw,
     Search,
+    Send,
     Settings2,
     Shield,
     SlidersHorizontal,
@@ -72,12 +77,12 @@ const agents = [
     { id: 'cursor-agent', initials: 'CA', scopes: ['PROJECT:kryptodb', 'research'], status: 'revoked', active: '3h ago' },
 ]
 const auditEvents = [
-    ['14:42:08.331', 'Agent-1', 'traversal_step', 'research', 'allowed'],
+    ['14:42:08.331', 'Agent-1', 'traversal_complete', 'research', 'allowed'],
     ['14:41:55.104', 'campus-bot', 'propose_fact', 'PROJECT:campus', 'allowed'],
     ['14:40:12.887', 'cursor-agent', 'permission_denied', 'locked', 'blocked'],
-    ['14:39:44.010', 'Agent-1', 'traversal_step', 'PROJECT:kryptodb', 'allowed'],
+    ['14:39:44.010', 'Agent-1', 'traversal_complete', 'PROJECT:kryptodb', 'allowed'],
     ['14:38:01.452', 'system', 'revoke', 'PROJECT:kryptodb', 'cascade'],
-    ['14:36:21.729', 'campus-bot', 'traversal_step', 'research', 'allowed'],
+    ['14:36:21.729', 'campus-bot', 'traversal_complete', 'research', 'allowed'],
 ]
 
 function StatusDot({ status = 'active' }: { status?: string }) { return <span className={`status-dot ${status}`} aria-label={status} /> }
@@ -85,15 +90,37 @@ function Kbd({ children }: { children: React.ReactNode }) { return <span classNa
 function ScopeChip({ name }: { name: string }) { return <span className={`scope-chip scope-${name.toLowerCase().replace(/[^a-z]/g, '-')}`}><span className="scope-mark" />{name}</span> }
 function Button({ children, className = '', onClick, title, style }: { children: React.ReactNode; className?: string; onClick?: () => void; title?: string; style?: React.CSSProperties }) { return <button title={title} onClick={onClick} style={style} className={`ui-button ${className}`}>{children}</button> }
 
-import LiveGraph from './GraphExplorer'
+import dynamic from 'next/dynamic'
+const LiveGraph = dynamic(() => import('./GraphExplorer'), { ssr: false })
 
 const API_BASE = process.env.NEXT_PUBLIC_KRYPTODB_URL || (typeof window !== 'undefined' ? `http://${window.location.hostname}:8000` : 'http://127.0.0.1:8000')
 
 function apiFetch(path: string, init: RequestInit = {}) {
-    const apiKey = typeof window !== 'undefined' ? window.localStorage.getItem('kryptodb_api_key') : null
+    const apiKey = typeof window !== 'undefined' ? (window.localStorage.getItem('kryptodb_api_key') || 'dev-admin-key') : 'dev-admin-key'
     const headers = new Headers(init.headers)
     if (apiKey) headers.set('Authorization', `Bearer ${apiKey}`)
     return fetch(`${API_BASE}${path}`, { ...init, headers })
+}
+
+type BackendAgent = {
+    id: string
+    allowed_scopes: string[]
+    trust_prior?: number
+    initials: string
+}
+
+function normalizeAgents(data: unknown): BackendAgent[] {
+    const records = Array.isArray(data) ? data : Object.values((data || {}) as Record<string, any>)
+    const seen = new Set<string>()
+    return records
+        .filter((agent: any) => agent && typeof agent.id === 'string' && agent.id.trim())
+        .map((agent: any) => ({
+            ...agent,
+            id: agent.id.trim(),
+            allowed_scopes: Array.isArray(agent.allowed_scopes) ? agent.allowed_scopes.filter(Boolean) : [],
+            initials: agent.id.trim().slice(0, 2).toUpperCase(),
+        }))
+        .filter((agent: BackendAgent) => !seen.has(agent.id) && seen.add(agent.id))
 }
 
 function Inspector({ node, onClose }: { node: any | null; onClose: () => void }) {
@@ -115,7 +142,6 @@ function Inspector({ node, onClose }: { node: any | null; onClose: () => void })
 }
 
 function GraphExplorer({ selected, onSelect }: any) {
-    const [hopDepth, setHopDepth] = useState(2)
     return <section className="view-content graph-view">
         <div className="view-header compact-header">
             <div className="title-row">
@@ -127,12 +153,11 @@ function GraphExplorer({ selected, onSelect }: any) {
         <div className="stats-strip">
             <div><span>Nodes</span><strong style={{ fontVariantNumeric: 'tabular-nums' }}>Live</strong></div>
             <div><span>Edges</span><strong style={{ fontVariantNumeric: 'tabular-nums' }}>Live</strong></div>
-            <div><span>Hop depth</span><strong style={{ fontVariantNumeric: 'tabular-nums' }}>{hopDepth}</strong></div>
             <div><span>Last traversal</span><strong style={{ fontVariantNumeric: 'tabular-nums' }}>--<span className="unit">ms</span></strong></div>
             <div className="stats-status"><StatusDot /> <span>WebSocket stream healthy</span></div>
         </div>
         <div className="graph-layout">
-            <LiveGraph selected={selected} onSelect={onSelect} hopDepth={hopDepth} />
+            <LiveGraph selected={selected} onSelect={onSelect} />
             <Inspector node={selected} onClose={() => onSelect(null)} />
         </div>
     </section>
@@ -148,15 +173,13 @@ function AgentsViewLegacy() {
         apiFetch('/agents')
             .then(res => { if (!res.ok) throw new Error('Failed to fetch'); return res.json(); })
             .then(data => {
-                const arr = Object.values(data)
-                    .filter((a: any) => a && a.id)
-                    .map((a: any) => ({
-                        id: a.id,
-                        initials: a.id.substring(0, 2).toUpperCase(),
-                        scopes: a.allowed_scopes || [],
-                        status: 'active',
-                        active: 'just now'
-                    }));
+                const arr = normalizeAgents(data).map(a => ({
+                    id: a.id,
+                    initials: a.initials,
+                    scopes: a.allowed_scopes,
+                    status: 'active',
+                    active: 'available'
+                }));
                 setFetchedAgents(arr);
             })
             .catch(err => console.error(err));
@@ -193,7 +216,7 @@ function AgentsView() {
         apiFetch('/maintenance/migration-preflight').then(r => r.ok ? r.json() : { total_pending: 0 }),
     ]).then(([agentData, keyData, scopeData, preflightData]) => {
         setAdminReady(true);
-        const list = Object.values(agentData).filter((a: any) => a?.id).map((a: any) => ({ ...a, initials: a.id.substring(0, 2).toUpperCase() }));
+        const list = normalizeAgents(agentData);
         setAgents(list); setKeys(keyData.keys || []); setScopeKeys(scopeData.keys || []);
         setPendingStats(preflightData);
         if (!agentId && list[0]) { setAgentId(list[0].id); setScopes((list[0].allowed_scopes || []).join(', ')); }
@@ -203,7 +226,15 @@ function AgentsView() {
 
     const saveKey = () => { window.localStorage.setItem('kryptodb_api_key', apiKey.trim()); setNotice('Credential saved in this browser.'); load(); };
     const scopeList = () => scopes.split(',').map(s => s.trim()).filter(Boolean);
-    const selectAgent = (id: string) => { const a = agents.find(item => item.id === id); setAgentId(id); setScopes((a?.allowed_scopes || []).join(', ')); };
+    const selectAgent = (id: string) => {
+        const a = agents.find(item => item.id === id);
+        setAgentId(id);
+        setScopes((a?.allowed_scopes || []).join(', '));
+        if (typeof window !== 'undefined') {
+            window.localStorage.setItem('kryptodb_active_agent', id);
+            window.dispatchEvent(new Event('kryptodb_active_agent_changed'));
+        }
+    };
     const updateScopes = async () => { const r = await apiFetch('/admin/agents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: agentId, scopes: scopeList() }) }); setNotice(r.ok ? `Scopes updated for ${agentId}.` : 'Could not update scopes.'); load(); };
     const createKey = async () => { const r = await apiFetch('/admin/api-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_id: agentId, scopes: scopeList() }) }); const data = await r.json(); setNotice(r.ok ? `Copy this key now: ${data.api_key}` : (data.detail || 'Could not create key.')); load(); };
     const revokeKey = async (id: string) => { const r = await apiFetch(`/admin/api-keys/${id}/revoke`, { method: 'POST' }); setNotice(r.ok ? `Revoked ${id}.` : 'Could not revoke key.'); load(); };
@@ -294,6 +325,29 @@ function AgentsView() {
     return (
         <section className="view-content" style={{ maxWidth: 800 }}>
             <ViewTitle title="Agents & Access" subtitle="Control which dataset scopes each agent can use." />
+
+            <div className="live-agents-panel">
+                <div className="live-agents-heading">
+                    <div>
+                        <span className="eyebrow">Live agent identities</span>
+                        <h2>{agents.length} available through the gateway</h2>
+                    </div>
+                    <span className="live-agents-state"><StatusDot /> backend synced</span>
+                </div>
+                <div className="live-agents-grid">
+                    {agents.map(agent => (
+                        <button key={agent.id} className={`live-agent-card ${agentId === agent.id ? 'selected' : ''}`} onClick={() => selectAgent(agent.id)}>
+                            <span className="avatar">{agent.initials}</span>
+                            <span className="live-agent-copy">
+                                <strong>{agent.id}</strong>
+                                <small>{agent.allowed_scopes?.length || 0} authorized scope{agent.allowed_scopes?.length === 1 ? '' : 's'}</small>
+                            </span>
+                            <span className="live-agent-check"><StatusDot /></span>
+                        </button>
+                    ))}
+                    {agents.length === 0 && <div className="live-agents-empty">No agent identities were returned by the gateway.</div>}
+                </div>
+            </div>
 
             {/* Administrator connection */}
             <div className="panel setup-panel" style={{ marginBottom: 16 }}>
@@ -430,11 +484,17 @@ function AgentsView() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16, background: 'rgba(255,255,255,0.03)', borderRadius: 6 }}>
                     <strong>Manage Permissions & Credentials</strong>
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                        <label style={{ width: 100 }}>Agent ID: </label>
-                        <input list="agent-list" style={{ flex: 1 }} value={agentId} onChange={e => selectAgent(e.target.value)} placeholder="Type new or select existing agent ID" />
-                        <datalist id="agent-list">
-                            {agents.map(a => <option key={a.id} value={a.id} />)}
-                        </datalist>
+                        <select
+                            style={{ flex: 1, padding: '8px 12px', background: '#141722', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '6px', color: '#fff', fontSize: '0.9em' }}
+                            value={agentId}
+                            onChange={e => selectAgent(e.target.value)}
+                        >
+                            {agents.map(a => (
+                                <option key={a.id} value={a.id} style={{ background: '#141722', color: '#fff' }}>
+                                    {a.id} {(a.allowed_scopes || []).length > 0 ? `(scopes: ${(a.allowed_scopes || []).join(', ')})` : ''}
+                                </option>
+                            ))}
+                        </select>
                     </div>
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                         <label style={{ width: 100 }}>Scopes: </label>
@@ -546,7 +606,7 @@ function AuditView() {
     }, []);
 
     const filtered = filter === 'all' ? events : events.filter((e) => e[2] === filter);
-    return <section className="view-content"><ViewTitle title="Audit Log" subtitle="Immutable event stream from the graph gateway." action={<div className="filter-row"><select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter audit events"><option value="all">All event types</option><option value="traversal_step">Traversal steps</option><option value="permission_denied">Denied events</option><option value="propose_fact">Proposed facts</option></select></div>} /><div className="panel audit-panel"><div className="audit-top"><span>STREAM / GRAPH_EVENTS</span><span><StatusDot /> tailing live</span></div>{filtered.map((event, i) => <div className={`audit-row ${event[4] === 'blocked' ? 'blocked' : ''}`} key={i}><code className="audit-time">{event[0]}</code><code className="audit-agent">{event[1]}</code><span className={`event-badge ${event[2]}`}>{event[2]}</span><ScopeChip name={event[3]} /><span className="audit-result">{event[4] === 'blocked' ? <><X size={13} /> blocked</> : event[4] === 'cascade' ? <><RefreshCw size={13} /> cascade complete</> : <><Check size={13} /> allowed</>}</span></div>)}</div></section>
+    return <section className="view-content"><ViewTitle title="Audit Log" subtitle="Immutable event stream from the graph gateway." action={<div className="filter-row"><select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter audit events"><option value="all">All event types</option><option value="traversal_complete">Completed traversals</option><option value="permission_denied">Denied events</option><option value="propose_fact">Proposed facts</option></select></div>} /><div className="panel audit-panel"><div className="audit-top"><span>STREAM / GRAPH_EVENTS</span><span><StatusDot /> tailing live</span></div>{filtered.map((event, i) => <div className={`audit-row ${event[4] === 'blocked' ? 'blocked' : ''}`} key={i}><code className="audit-time">{event[0]}</code><code className="audit-agent">{event[1]}</code><span className={`event-badge ${event[2]}`}>{event[2]}</span><ScopeChip name={event[3]} /><span className="audit-result">{event[4] === 'blocked' ? <><X size={13} /> blocked</> : event[4] === 'cascade' ? <><RefreshCw size={13} /> cascade complete</> : <><Check size={13} /> allowed</>}</span></div>)}</div></section>
 }
 
 function McpView() {
@@ -569,7 +629,7 @@ function McpView() {
     const config = `{"mcpServers":{"kryptodb":{"command":"uv","args":["run","kryptodb-mcp"],"env":{"AGENT_ID":"${agent}","KRYPTODB_API_KEY":"<paste-api-key>","KRYPTODB_URL":"${API_BASE}"}}}}`;
     const copy = () => { navigator.clipboard?.writeText(config); setCopied(true); setTimeout(() => setCopied(false), 1500) };
     const test = async () => { setStatus('connecting'); try { const response = await apiFetch('/health'); setStatus(response.ok ? 'connected' : 'error'); } catch { setStatus('error') } };
-    return <section className="view-content mcp-view"><ViewTitle title="MCP Setup" subtitle="Connect Claude Desktop, Cursor, or any MCP-compatible assistant." /><div className="mcp-grid"><div className="panel setup-panel"><div className="step"><span className="step-num">1</span><div><strong>Choose an agent identity</strong><span>Requests will be scoped to this identity and API key.</span></div></div><div><input list="mcp-agent-list" className="agent-select" style={{ width: '100%' }} value={agent} onChange={(e) => setAgent(e.target.value)} placeholder="Type new or select existing agent ID" aria-label="Choose agent identity" /><datalist id="mcp-agent-list">{fetchedAgents.map((a) => <option key={a.id} value={a.id} />)}</datalist></div><div className="step"><span className="step-num">2</span><div><strong>Copy the connection config</strong><span>Replace the placeholder with a real API key created by an administrator.</span></div></div><div className="config-code"><Button onClick={copy} className="copy-button">{copied ? <Check size={14} /> : <Clipboard size={14} />} {copied ? 'Copied' : 'Copy JSON'}</Button><pre>{config}</pre></div><div className="step"><span className="step-num">3</span><div><strong>Verify the gateway</strong><span>Checks backend storage health; MCP sessions still require an active partition.</span></div></div><Button onClick={test} className="primary test-button"><Play size={14} /> Test gateway</Button>{status !== 'idle' && <div className={`connection-status ${status}`}><StatusDot status={status === 'connected' ? 'active' : status === 'error' ? 'revoked' : 'pending'} /> {status === 'connected' ? 'Gateway healthy' : status === 'error' ? 'Gateway unavailable' : 'Checking gateway…'}</div>}</div><div className="mcp-aside"><div className="gradient-card"><Terminal size={20} /><span className="eyebrow">MCP transport</span><strong>Authenticated, scoped, observable.</strong><p>Tool calls use KRYPTODB_API_KEY. Activate partitions with session_activate_tool before querying knowledge.</p></div><div className="quick-links"><span className="eyebrow">Supported clients</span><div><span>Claude Desktop</span><span>Cursor</span><span>Windsurf</span></div></div></div></div></section>
+    return <section className="view-content mcp-view"><ViewTitle title="MCP Setup" subtitle="Connect Claude Desktop, Cursor, or any MCP-compatible assistant." /><div className="mcp-grid"><div className="panel setup-panel"><div className="step"><span className="step-num">1</span><div><strong>Choose an agent identity</strong><span>Requests will be scoped to this identity and API key.</span></div></div><div><select className="agent-select" style={{ width: '100%', padding: '8px 12px', background: '#141722', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '6px', color: '#fff' }} value={agent} onChange={(e) => { setAgent(e.target.value); if (typeof window !== 'undefined') { window.localStorage.setItem('kryptodb_active_agent', e.target.value); window.dispatchEvent(new Event('kryptodb_active_agent_changed')); } }} aria-label="Choose agent identity">{fetchedAgents.map((a) => <option key={a.id} value={a.id} style={{ background: '#141722', color: '#fff' }}>{a.id}</option>)}</select></div><div className="step"><span className="step-num">2</span><div><strong>Copy the connection config</strong><span>Replace the placeholder with a real API key created by an administrator.</span></div></div><div className="config-code"><Button onClick={copy} className="copy-button">{copied ? <Check size={14} /> : <Clipboard size={14} />} {copied ? 'Copied' : 'Copy JSON'}</Button><pre>{config}</pre></div><div className="step"><span className="step-num">3</span><div><strong>Verify the gateway</strong><span>Checks backend storage health; MCP sessions still require an active partition.</span></div></div><Button onClick={test} className="primary test-button"><Play size={14} /> Test gateway</Button>{status !== 'idle' && <div className={`connection-status ${status}`}><StatusDot status={status === 'connected' ? 'active' : status === 'error' ? 'revoked' : 'pending'} /> {status === 'connected' ? 'Gateway healthy' : status === 'error' ? 'Gateway unavailable' : 'Checking gateway…'}</div>}</div><div className="mcp-aside"><div className="gradient-card"><Terminal size={20} /><span className="eyebrow">MCP transport</span><strong>Authenticated, scoped, observable.</strong><p>Tool calls use KRYPTODB_API_KEY. Activate partitions with session_activate_tool before querying knowledge.</p></div><div className="quick-links"><span className="eyebrow">Supported clients</span><div><span>Claude Desktop</span><span>Cursor</span><span>Windsurf</span></div></div></div></div></section>
 }
 
 function CommandPalette({ onClose, onNavigate, onNodeSelect }: { onClose: () => void; onNavigate: (view: View) => void, onNodeSelect: (n: any) => void }) {
@@ -616,11 +676,13 @@ function CommandPalette({ onClose, onNavigate, onNodeSelect }: { onClose: () => 
     return <div className="palette-backdrop" onClick={onClose}><div className="palette" onClick={(e) => e.stopPropagation()}><div className="palette-input"><Search size={18} /><input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search commands, agents, scopes…" onKeyDown={(e) => e.key === 'Escape' && onClose()} /><Kbd>esc</Kbd></div><div className="palette-label">Actions</div><div style={{ maxHeight: '300px', overflowY: 'auto' }}>{shown.map((item) => <button className="palette-item" key={item.name} onClick={() => { item.action(); onClose() }}><span className="palette-icon"><item.icon size={16} /></span><span><strong>{item.name}</strong><small>{item.subtitle}</small></span><Kbd>{item.shortcut}</Kbd><ChevronRight size={14} /></button>)}{shown.length === 0 && <div className="no-results">No commands found</div>}</div><div className="palette-footer"><span><Kbd>↑↓</Kbd> Navigate</span><span><Kbd>↵</Kbd> Select</span><span><Kbd>esc</Kbd> Close</span></div></div></div>
 }
 
+
 export default function Page() {
     const [view, setView] = useState<View>('Graph Explorer');
     const [palette, setPalette] = useState(false);
     const [mobileNav, setMobileNav] = useState(false);
     const [selectedNode, setSelectedNode] = useState<any>(null);
+    const [activityOpen, setActivityOpen] = useState(true);
 
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
@@ -634,5 +696,68 @@ export default function Page() {
         return () => window.removeEventListener('keydown', handler)
     }, []);
 
-    return <main className="app-shell"><aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}><div className="brand"><div className="brand-mark"><img src="/icon.png" style={{ width: 17, height: 17, objectFit: 'contain' }} alt="KryptoDB Logo" /></div><span>Krypto<span>DB</span></span><Button className="mobile-close" onClick={() => setMobileNav(false)}><X size={15} /></Button></div><div className="workspace"><span className="eyebrow">Workspace</span><div className="workspace-value"><span className="workspace-dot" /> KryptoDB / prod</div></div><nav><span className="nav-label">Observe</span>{nav.slice(0, 2).map(({ label, icon: Icon }) => <button key={label} className={view === label ? 'active' : ''} onClick={() => { setView(label); setMobileNav(false) }}><Icon size={16} />{label}{label === 'Graph Explorer' && <span className="nav-pulse" />}</button>)}<span className="nav-label">Configure</span>{nav.slice(2).map(({ label, icon: Icon }) => <button key={label} className={view === label ? 'active' : ''} onClick={() => { setView(label); setMobileNav(false) }}><Icon size={16} />{label}</button>)}</nav><div className="sidebar-bottom"><div className="security-note"><Shield size={15} /><div><strong>Encrypted by default</strong><span>AES-256-GCM active</span></div></div></div></aside><div className="main-area"><header className="topbar"><Button className="menu-button" onClick={() => setMobileNav(true)}><Menu size={17} /></Button><button className="global-search" onClick={() => setPalette(true)}><Search size={15} /><span>Search anything…</span><Kbd>⌘ K</Kbd></button><div className="top-actions"><div className="stream-status"><StatusDot /> <span>Live</span></div></div></header>{view === 'Graph Explorer' && <GraphExplorer selected={selectedNode} onSelect={setSelectedNode} />}{view === 'Agents & Access' && <AgentsView />}{view === 'Config / Ontology' && <ConfigView />}{view === 'Audit Log' && <AuditView />}{view === 'MCP Setup' && <McpView />}</div>{palette && <CommandPalette onClose={() => setPalette(false)} onNavigate={setView} onNodeSelect={setSelectedNode} />}</main>
+    return (
+        <main className="app-shell">
+            <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}>
+                <div className="brand">
+                    <div className="brand-mark">
+                        <img src="/icon.png" style={{ width: 17, height: 17, objectFit: 'contain' }} alt="KryptoDB Logo" />
+                    </div>
+                    <span>Krypto<span>DB</span></span>
+                    <Button className="mobile-close" onClick={() => setMobileNav(false)}><X size={15} /></Button>
+                </div>
+                <div className="workspace">
+                    <span className="eyebrow">Workspace</span>
+                    <div className="workspace-value"><span className="workspace-dot" /> KryptoDB / prod</div>
+                </div>
+                <nav>
+                    <span className="nav-label">Observe</span>
+                    {nav.slice(0, 2).map(({ label, icon: Icon }) => (
+                        <button key={label} className={view === label ? 'active' : ''} onClick={() => { setView(label); setMobileNav(false) }}>
+                            <Icon size={16} />{label}{label === 'Graph Explorer' && <span className="nav-pulse" />}
+                        </button>
+                    ))}
+                    <span className="nav-label">Configure</span>
+                    {nav.slice(2).map(({ label, icon: Icon }) => (
+                        <button key={label} className={view === label ? 'active' : ''} onClick={() => { setView(label); setMobileNav(false) }}>
+                            <Icon size={16} />{label}
+                        </button>
+                    ))}
+                </nav>
+                <div className="sidebar-bottom">
+                    <div className="security-note">
+                        <Shield size={15} />
+                        <div><strong>Encrypted by default</strong><span>AES-256-GCM active</span></div>
+                    </div>
+                </div>
+            </aside>
+
+            <div className="main-area">
+                <header className="topbar">
+                    <Button className="menu-button" onClick={() => setMobileNav(true)}><Menu size={17} /></Button>
+                    <button className="global-search" onClick={() => setPalette(true)}>
+                        <Search size={15} /><span>Search anything…</span><Kbd>⌘ K</Kbd>
+                    </button>
+                    <div className="top-actions">
+                        <div className="stream-status"><StatusDot /> <span>Live</span></div>
+                        <Button
+                            title="Agent Activity"
+                            onClick={() => setActivityOpen(true)}
+                            className={`agent-activity-trigger ${activityOpen ? 'primary' : ''}`}
+                        >
+                            <Bot size={16} /> Agent Activity <span className="trigger-badge">●2</span>
+                        </Button>
+                    </div>
+                </header>
+                {view === 'Graph Explorer' && <GraphExplorer selected={selectedNode} onSelect={setSelectedNode} />}
+                {view === 'Agents & Access' && <AgentsView />}
+                {view === 'Config / Ontology' && <ConfigView />}
+                {view === 'Audit Log' && <AuditView />}
+                {view === 'MCP Setup' && <McpView />}
+            </div>
+
+            {palette && <CommandPalette onClose={() => setPalette(false)} onNavigate={setView} onNodeSelect={setSelectedNode} />}
+            {activityOpen && <AgentActivityModal onClose={() => setActivityOpen(false)} onSelectNode={setSelectedNode} />}
+        </main>
+    )
 }
