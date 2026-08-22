@@ -134,7 +134,10 @@ def create_recall_node(llm: Optional[Any] = None, store: Optional[KryptoDBStore]
                         content=(
                             f"You are KryptoDB Agent '{state.agent_id}'. You have access to encrypted memory graph partitions: [{scopes_desc}].\n"
                             f"Call `query_memory_tool` to search for relevant memory facts across your authorized partitions before answering.\n"
-                            f"CRITICAL: To ensure you find the necessary information, you SHOULD make multiple parallel tool calls to `query_memory_tool` using different wordings, synonyms, and sub-queries.\n"
+                            f"CRITICAL RULES FOR SEARCHING:\n"
+                            f"1. Do NOT put full conversational prompts or questions directly into the `query` argument.\n"
+                            f"2. Extract concise KEYWORDS or ENTITY NAMES (e.g. 'moon mission', 'Apollo', 'Project X').\n"
+                            f"3. You SHOULD make multiple parallel tool calls to `query_memory_tool` using different wordings, synonyms, and sub-queries to maximize recall.\n"
                             f"You may specify `requested_scope` to target a specific partition, or pass None to search across all authorized partitions."
                         )
                     )
@@ -145,12 +148,17 @@ def create_recall_node(llm: Optional[Any] = None, store: Optional[KryptoDBStore]
                 except Exception as exc:
                     logger.warning("LLM recall/tool-selection call failed: %s", exc)
 
+            import re
+            fallback_query = re.sub(r'^(do you know( anything)? about|tell me( anything)? about|what is|who is|where is|can you( please)?( find| search( for)?)?)\s+', '', latest_user_msg, flags=re.IGNORECASE).strip()
+            if not fallback_query:
+                fallback_query = latest_user_msg
+
             tool_call_msg = AIMessage(
                 content="",
                 tool_calls=[{
                     "name": "query_memory_tool",
                     "args": {
-                        "query": latest_user_msg,
+                        "query": fallback_query,
                         "requested_scope": req_scope,
                         "mode": "local"
                     },
