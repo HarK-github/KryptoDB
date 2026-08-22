@@ -16,15 +16,19 @@ KryptoDB is a graph-based memory server for multi-agent systems, exposing its kn
 *   **Database & Storage:** Neo4j (Graph Database), Redis (Caching)
 *   **Security:** AES-256-GCM Envelope Encryption, HMAC indexing, API-key Identity
 
----
-
+ 
+  
 <div align="center">
-  <video src="https://github.com/HarK-github/KryptoDB/raw/main/resources/demo.mp4" width="100%" controls autoplay loop muted></video>
+  
+
+https://github.com/user-attachments/assets/6dc7dd7b-9795-4dc6-a76c-4cd5302b3ec6
+
+
   <br />
   <img src="./image-1.png?v=1" alt="KryptoDB Web Dashboard" style="max-width: 100%" />
 </div>
 
----
+ 
 
 ## 🔒 Security Model & Residual Trust
 
@@ -36,7 +40,7 @@ The system is designed to isolate agents from one another, but heavily relies on
 - **Master & Scope Keys:** KEKs are held in memory by the daemon. The host filesystem must aggressively protect `.env` and `synapse-scope-keys.json`.
 - **Backend Storage:** Redis and Neo4j hold ciphertexts and perform pre-filtering. Standard network isolation and database ACLs are still required to prevent tampering.
 
----
+ 
 
 ## ⬡ Architecture Overview
 
@@ -51,7 +55,7 @@ KryptoDB operates as an intermediary broker between LLM agents and the encrypted
 
 *Note: Ephemeral clustering (Louvain community detection) can be invoked by setting `mode='global'` on queries, which temporarily projects the graph into Neo4j RAM and instantly destroys it after summarization to protect memory limits.*
 
----
+ 
 
 ## 🌟 Key Features
 
@@ -61,7 +65,7 @@ KryptoDB operates as an intermediary broker between LLM agents and the encrypted
 *   **Asynchronous Human-in-the-Loop (HITL):** Fully asynchronous, non-blocking FastAPI endpoints for reviewing, approving, or rejecting sensitive agent writes to the graph database.
 *   **Cryptographic Memory Partitioning:** Strict AES-256-GCM envelope encryption guarantees agents can only traverse and recall nodes within their authorized scopes.
 
----
+ 
 
 ## 🚀 Deployment Options
 
@@ -87,7 +91,7 @@ uvicorn kryptodb.daemon.server:app --host 127.0.0.1 --port 8000
 ```
 *The web UI is now accessible at http://127.0.0.1:8000.*
 
----
+ 
 
 ## 🔑 Provision an Agent API Key
 Once your deployment is running (via Docker or Python), use the admin key to mint an agent credential:
@@ -141,14 +145,14 @@ args = [
 ]
 ```
 
----
+ 
 
 ## 🛠 MCP Tools Reference
 
 The primary interface for agents is the MCP tool suite.
 
 | Tool Name | Purpose | Example Payload |
-|-----------|---------|-----------------|
+|   --|   |     --|
 | `session_activate_tool` | Unlocks partition keys for the current session. **Must be called before querying.** | `{"active_partitions": ["research"]}` |
 | `propose_fact_tool` | Write a new encrypted fact to a specific scope. | `{"subject": "Project X", "predicate": "relies_on", "obj": "DB1", "scope": "research"}` |
 | `query_memory_tool` | Search authorized knowledge. Set `mode='global'` for Louvain clustering. | `{"subject_id": "Project X"}` |
@@ -157,7 +161,7 @@ The primary interface for agents is the MCP tool suite.
 | `migrate_legacy_tool` | Convert authorized legacy facts into per-knowledge envelopes. | `{"scopes": ["research"]}` |
 | `reclassify_tool` | Re-encrypt a knowledge item under a different active scope. | `{"node_id": "uuid-here", "to_scope": "operations"}` |
 
----
+ 
 
 ## 🛡 Production Deployment
 
@@ -186,10 +190,10 @@ docker run --rm \
 ```
 *(Ensure input and output files are pre-created with `0600` permissions on the host. The CLI writes the new agent key to the output file without printing it to stdout.)*
 
----
+ 
 ## License
 Released under the MIT License.
 
----
+ 
 ## Contributors
 Made with ❤️ by **Harshit Kandpal** - *Creator & Lead Developer*
