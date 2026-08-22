@@ -1,0 +1,9 @@
+{
+  "dependencies": [
+    "."
+  ],
+  "graphs": {
+    "kryptodb_agent": "./kryptodb/agent/graph.py:get_compiled_graph"
+  },
+  "env": ".env"
+}

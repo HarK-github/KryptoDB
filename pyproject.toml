@@ -18,7 +18,18 @@ dependencies = [
     "httpx",
     "cryptography",
     "mcp",
-    "sentence-transformers"
+    "sentence-transformers",
+    "langchain-core",
+    "langchain-community",
+    "langchain-ollama",
+    "langchain-openai",
+    "langgraph",
+    "langgraph-checkpoint-sqlite",
+    "packaging",
+    "python-dotenv",
+    "fastmcp",
+    "textual",
+    "trustcall"
 ]
 
 [tool.setuptools.packages.find]

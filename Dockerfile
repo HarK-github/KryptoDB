@@ -33,10 +33,10 @@ COPY pyproject.toml ./
 # Stub the package so pip can resolve the install target
 RUN mkdir -p kryptodb && touch kryptodb/__init__.py
 
-# Install into a prefix we can copy cleanly
-RUN pip install --no-cache-dir --prefix=/install \
-    fastapi uvicorn[standard] neo4j redis pydantic pydantic-settings \
-    cryptography mcp
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu --prefix=/install \
+    fastapi "uvicorn[standard]" neo4j redis pydantic pydantic-settings \
+    cryptography mcp fastmcp sentence-transformers langchain-core langchain-community \
+    langchain-ollama langchain-openai langgraph langgraph-checkpoint-sqlite packaging python-dotenv textual trustcall
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 3 — Runtime image
@@ -61,6 +61,7 @@ COPY data/ ./data/
 COPY pyproject.toml ./
 
 # Install the package in editable mode (uses kryptodb/ dir, no build artifacts)
+RUN pip install --no-cache-dir packaging
 RUN pip install --no-cache-dir --no-deps -e .
 
 # Frontend — Next.js standalone build

@@ -1,17 +1,24 @@
 {
   "campus-bot": {
     "id": "campus-bot",
-    "trust_prior": 0.5,
+    "trust_prior": 0.8,
     "allowed_scopes": [
-      "research"
+      "research",
+      "PROJECT:synapse",
+      "PROJECT:kryptodb"
     ]
   },
   "Agent-1": {
     "id": "Agent-1",
     "trust_prior": 0.8,
     "allowed_scopes": [
-      "research",
-      "PROJECT:kryptodb"
+      "ORG:acme-structure",
+      "PROJECT:kryptodb",
+      "RESEARCH:threat-intel",
+      "PROJECT:alpha",
+      "SCOPE_ALPHA",
+      "PROJECT:synapse",
+      "research"
     ]
   },
   "": {
