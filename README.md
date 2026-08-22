@@ -20,7 +20,7 @@ KryptoDB is a graph-based memory server for multi-agent systems, exposing its kn
 
 <div align="center">
   <video width="100%" controls autoplay loop muted>
-    <source src="./resources/demo.mp4" type="video/mp4">
+    <source src="https://github.com/HarK-github/KryptoDB/raw/main/resources/demo.mp4" type="video/mp4">
   </video>
   <br />
   <img src="./image-1.png?v=1" alt="KryptoDB Web Dashboard" style="max-width: 100%" />
