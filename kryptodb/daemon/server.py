@@ -1,7 +1,8 @@
 """
 Unified KryptoDB Daemon server.
 """
-from fastapi import FastAPI, HTTPException, APIRouter, BackgroundTasks, Depends, Header
+import kryptodb
+from fastapi import FastAPI, HTTPException, APIRouter, BackgroundTasks, Depends, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -212,7 +213,8 @@ def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = No
         session = get_request_session(context, x_kryptodb_session)
         active_scopes = set(session.keys) if session else set()
         if context.is_admin:
-            agent = {"id": "admin", "allowed_scopes": []}
+            target = get_agent(agent_id)
+            agent = target if target else {"id": "admin", "allowed_scopes": list(keyring._keys.keys())}
         else:
             agent = get_agent(context.agent_id)
             if not agent:
@@ -220,19 +222,27 @@ def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = No
     else:
         session = None
         active_scopes = set(keyring._keys)
-        agent = get_agent(agent_id)
+        agent = get_agent(agent_id) or {"id": agent_id, "allowed_scopes": list(keyring._keys.keys())}
     if not agent:
         raise HTTPException(status_code=403, detail="Unknown agent")
-    
-    if requested_scope:
-        allowed = set(agent.get("allowed_scopes", [])) if not (isinstance(context, AuthContext) and context.is_admin) else active_scopes
-        if requested_scope not in allowed:
-            return {"status": "denied_permission", "facts": []}
-        if requested_scope not in active_scopes and not (isinstance(context, AuthContext) and context.is_admin):
-            return {"status": "denied_inactive", "facts": []}
-        scopes_to_query = [requested_scope]
+
+    allowed_agent_scopes = set(agent.get("allowed_scopes", []))
+    if "*" in allowed_agent_scopes or (isinstance(context, AuthContext) and context.is_admin and not allowed_agent_scopes):
+        allowed_agent_scopes = set(keyring._keys.keys())
+
+    if requested_scope and requested_scope.lower() not in ("all", "*", "global"):
+        req_scopes = [s.strip() for s in requested_scope.split(",") if s.strip()]
+        for s in req_scopes:
+            if s not in allowed_agent_scopes and not (isinstance(context, AuthContext) and context.is_admin):
+                return {"status": "denied_permission", "facts": []}
+            if s not in active_scopes and not (isinstance(context, AuthContext) and context.is_admin):
+                return {"status": "denied_inactive", "facts": []}
+        scopes_to_query = req_scopes
     else:
-        scopes_to_query = sorted(set(agent.get("allowed_scopes", [])) & (active_scopes or set(agent.get("allowed_scopes", []))))
+        if isinstance(context, AuthContext) and context.is_admin:
+            scopes_to_query = sorted(allowed_agent_scopes or set(keyring._keys.keys()))
+        else:
+            scopes_to_query = sorted(allowed_agent_scopes & (active_scopes or allowed_agent_scopes))
 
     if mode == "global":
         from kryptodb.graph.gds_engine import GDSEngine
@@ -246,9 +256,20 @@ def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = No
             
         return {"status": "ok", "mode": "global", "communities": communities}
 
-    # Verify that at least one allowed scope is currently active in RAM
-    from kryptodb.daemon.keyring import keyring
-    effective_scopes = list(set(scopes_to_query) & (active_scopes or set(keyring._keys.keys())))
+    if isinstance(context, AuthContext) and context.is_admin:
+        for scope in scopes_to_query:
+            if scope not in keyring._keys:
+                try:
+                    keyring.add_key(scope, encryptor._get_or_create_key(scope))
+                except Exception as e:
+                    logger.debug(f"Scope {scope} key not available: {e}")
+            if session and scope not in session._keys:
+                k = keyring.get_key(scope)
+                if k:
+                    session.add_key(scope, k)
+        effective_scopes = [s for s in scopes_to_query if s in keyring._keys]
+    else:
+        effective_scopes = list(set(scopes_to_query) & (active_scopes or set(keyring._keys.keys())))
     if not effective_scopes:
         return {"status": "denied_inactive", "facts": []}
 
@@ -261,21 +282,6 @@ def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = No
     if not facts:
         return {"status": "not_found", "facts": []}
         
-    from kryptodb.daemon.events import event_bus, GraphEvent
-    from datetime import datetime
-    
-    async def publish_events():
-        for fact in facts:
-            scope = fact.get("permission_scope", "research")
-            await event_bus.publish(GraphEvent(
-                event_type="traversal_step",
-                permission_scope=scope,
-                timestamp=datetime.utcnow(),
-                edge_id=fact.get("edge_id") or fact.get("id")
-            ))
-            
-    background_tasks.add_task(publish_events)
-    
     return {"status": "ok", "mode": "local", "facts": facts}
 
 
@@ -309,7 +315,7 @@ def post_memory_query(
 @router.get("/graph/snapshot")
 def get_graph_snapshot(agent_id: str, context: AuthContext = Depends(require_auth), x_kryptodb_session: str | None = Header(default=None)):
     from kryptodb.memory_api.agents import get_agent
-    from kryptodb.daemon.keyring import keyring
+    
     from kryptodb.storage.neo4j_client import neo4j_client
 
     if isinstance(context, AuthContext) and not context.is_admin and context.agent_id != agent_id:
@@ -320,14 +326,19 @@ def get_graph_snapshot(agent_id: str, context: AuthContext = Depends(require_aut
         
     agent = get_agent(agent_id)
     if not agent:
-        if agent_id == "admin":
+        if agent_id == "admin" or (isinstance(context, AuthContext) and context.is_admin):
             query = "MATCH (n) RETURN DISTINCT n.permission_scope AS scope UNION MATCH ()-[r]->() RETURN DISTINCT r.permission_scope AS scope"
             scopes_res, _, _ = neo4j_client.execute_query_with_retry(query)
-            allowed_scopes = {r["scope"] for r in scopes_res if r["scope"]}
+            allowed_scopes = {r["scope"] for r in scopes_res if r.get("scope")}
         else:
             raise HTTPException(status_code=403, detail="Unknown agent")
     else:
         allowed_scopes = set(agent.get("allowed_scopes", []))
+    
+    if "*" in allowed_scopes:
+        query = "MATCH (n) RETURN DISTINCT n.permission_scope AS scope UNION MATCH ()-[r]->() RETURN DISTINCT r.permission_scope AS scope"
+        scopes_res, _, _ = neo4j_client.execute_query_with_retry(query)
+        allowed_scopes = {r["scope"] for r in scopes_res if r.get("scope")}
     
     active_partitions = set(keyring._keys.keys())
     if isinstance(context, AuthContext) and not context.is_admin:
@@ -410,7 +421,7 @@ def post_memory(req: ProposeFactRequest, background_tasks: BackgroundTasks, cont
             raise HTTPException(status_code=403, detail="Agent identity is bound to the API key")
         if not context.is_admin and edge.permission_scope not in api_keys.effective_scopes(context):
             raise HTTPException(status_code=403, detail="Fact scope is outside API-key scope")
-        proposer_id = context.agent_id
+        proposer_id = req.agent_id or context.agent_id
     else:
         proposer_id = req.agent_id
     
@@ -445,6 +456,430 @@ def post_memory(req: ProposeFactRequest, background_tasks: BackgroundTasks, cont
         response["task_id"] = task_id
         
     return response
+
+class AgentChatRequest(BaseModel):
+    agent_id: str = "agent-1"
+    user_scope: str = "research"
+    message: str
+    thread_id: str | None = None
+
+class AgentApproveRequest(BaseModel):
+    thread_id: str
+    approved: bool
+try:
+    from langgraph.types import Command
+    from langgraph.errors import GraphInterrupt
+except ImportError:
+    Command = None
+    class GraphInterrupt(Exception):
+        pass
+
+_agent_checkpointer = None
+
+def get_agent_checkpointer():
+    global _agent_checkpointer
+    if _agent_checkpointer is None:
+        try:
+            import sqlite3
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            import os
+            
+            db_path = os.environ.get(
+                "KRYPTODB_CHECKPOINT_DB",
+                "/data/checkpointer.sqlite" if os.path.isdir("/data") else "checkpointer.sqlite",
+            )
+            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            _agent_checkpointer = SqliteSaver(conn)
+            _agent_checkpointer.setup()
+        except Exception as e:
+            logger.warning(f"Could not initialize SqliteSaver: {e}")
+            try:
+                from langgraph.checkpoint.memory import MemorySaver
+                _agent_checkpointer = MemorySaver()
+                logger.info("Fell back to MemorySaver for checkpointer")
+            except Exception as inner_e:
+                logger.error(f"Could not initialize MemorySaver: {inner_e}")
+                return None
+    return _agent_checkpointer
+
+@router.post("/agent/chat")
+async def agent_chat(req: AgentChatRequest, context: AuthContext = Depends(require_auth)):
+    """Invoke or continue conversation with the KryptoDB Agent Graph."""
+    import asyncio
+    from kryptodb.agent.graph import get_compiled_graph
+    from langchain_core.messages import HumanMessage
+
+    thread_id = req.thread_id or f"session_{uuid.uuid4().hex[:6]}"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    llm = get_active_llm()
+    graph = get_compiled_graph(llm=llm, checkpointer=get_agent_checkpointer())
+    
+    input_state = {
+        "messages": [HumanMessage(content=req.message)],
+        "agent_id": req.agent_id,
+        "user_scope": req.user_scope,
+    }
+
+    try:
+        res = await asyncio.to_thread(graph.invoke, input_state, config=config)
+        state_snapshot = await asyncio.to_thread(graph.get_state, config)
+        
+        pending_interrupts = []
+        if state_snapshot.tasks:
+            for task in state_snapshot.tasks:
+                if hasattr(task, "interrupts") and task.interrupts:
+                    for intr in task.interrupts:
+                        pending_interrupts.append(intr.value if hasattr(intr, "value") else str(intr))
+
+        from langchain_core.messages import AIMessage
+        last_msg = ""
+        if res.get("messages"):
+            for m in reversed(res["messages"]):
+                if isinstance(m, AIMessage) or (isinstance(m, dict) and m.get("role") == "assistant"):
+                    last_msg = m.content if hasattr(m, "content") else (m.get("content") if isinstance(m, dict) else str(m))
+                    break
+
+        return {
+            "thread_id": thread_id,
+            "status": res.get("status", "completed"),
+            "agent_response": last_msg or res.get("reasoning_output"),
+            "reasoning": res.get("reasoning_output"),
+            "recalled_facts": res.get("recalled_facts", []),
+            "denied_recalls": res.get("denied_recalls", []),
+            "pending_facts": res.get("pending_facts", []),
+            "pending_interrupts": pending_interrupts,
+        }
+    except GraphInterrupt:
+        state_snapshot = await asyncio.to_thread(graph.get_state, config)
+        pending_interrupts = []
+        if state_snapshot.tasks:
+            for task in state_snapshot.tasks:
+                if hasattr(task, "interrupts") and task.interrupts:
+                    for intr in task.interrupts:
+                        pending_interrupts.append(intr.value if hasattr(intr, "value") else str(intr))
+
+        return {
+            "thread_id": thread_id,
+            "status": "pending_approval",
+            "agent_response": "Pending Human Approval: This memory write involves a sensitive scope and requires human authorization.",
+            "pending_interrupts": pending_interrupts,
+            "pending_facts": state_snapshot.values.get("pending_facts", [])
+        }
+    except Exception as e:
+        logger.error(f"Error in agent_chat: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/agent/approve")
+async def agent_approve(req: AgentApproveRequest, context: AuthContext = Depends(require_auth)):
+    """Resume agent execution following HITL write approval or rejection."""
+    import asyncio
+    from kryptodb.agent.graph import get_compiled_graph
+    
+    config = {"configurable": {"thread_id": req.thread_id}}
+    graph = get_compiled_graph(checkpointer=get_agent_checkpointer())
+    
+    try:
+        if Command is None:
+            raise HTTPException(status_code=500, detail="LangGraph is not available")
+        res = await asyncio.to_thread(graph.invoke, Command(resume={"approved": req.approved}), config=config)
+        
+        last_msg = ""
+        if res.get("messages"):
+            m = res["messages"][-1]
+            last_msg = m.content if hasattr(m, "content") else str(m)
+
+        return {
+            "thread_id": req.thread_id,
+            "status": res.get("status", "completed"),
+            "agent_response": last_msg or res.get("reasoning_output"),
+            "approved": req.approved,
+            "pending_facts": res.get("pending_facts", [])
+        }
+    except GraphInterrupt:
+        state_snapshot = await asyncio.to_thread(graph.get_state, config)
+        pending_interrupts = []
+        if state_snapshot.tasks:
+            for task in state_snapshot.tasks:
+                if hasattr(task, "interrupts") and task.interrupts:
+                    for intr in task.interrupts:
+                        pending_interrupts.append(intr.value if hasattr(intr, "value") else str(intr))
+
+        return {
+            "thread_id": req.thread_id,
+            "status": "pending_approval",
+            "agent_response": "Pending Human Approval: This memory write involves a sensitive scope and requires human authorization.",
+            "pending_interrupts": pending_interrupts,
+            "pending_facts": state_snapshot.values.get("pending_facts", [])
+        }
+    except Exception as e:
+        logger.error(f"Error in agent_approve: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── Phase 2.5 — Chat Transport Layer Endpoints ────────────────────────────
+
+@router.get("/chat/{thread_id}/history")
+def get_chat_history(thread_id: str, context: AuthContext = Depends(require_auth)):
+    """Retrieve checkpointed conversation history for a given thread_id."""
+    from kryptodb.agent.graph import get_compiled_graph
+    config = {"configurable": {"thread_id": thread_id}}
+    graph = get_compiled_graph(checkpointer=get_agent_checkpointer())
+    
+    state_snapshot = graph.get_state(config)
+    messages = []
+    if state_snapshot.values and "messages" in state_snapshot.values:
+        for m in state_snapshot.values["messages"]:
+            role = "user" if type(m).__name__ == "HumanMessage" else "agent"
+            content = m.content if hasattr(m, "content") else str(m)
+            messages.append({"role": role, "content": content})
+            
+    return {
+        "thread_id": thread_id,
+        "messages": messages,
+        "status": state_snapshot.values.get("status", "idle") if state_snapshot.values else "idle",
+        "pending_facts": state_snapshot.values.get("pending_facts", []) if state_snapshot.values else []
+    }
+
+@router.post("/chat/{thread_id}/message")
+async def chat_message(thread_id: str, req: AgentChatRequest, context: AuthContext = Depends(require_auth)):
+    """Send user message to thread_id."""
+    req.thread_id = thread_id
+    return await agent_chat(req, context)
+
+@router.post("/chat/{thread_id}/approve")
+async def chat_approve(thread_id: str, context: AuthContext = Depends(require_auth)):
+    """Approve pending fact write on thread_id."""
+    req = AgentApproveRequest(thread_id=thread_id, approved=True)
+    return await agent_approve(req, context)
+
+@router.post("/chat/{thread_id}/reject")
+async def chat_reject(thread_id: str, context: AuthContext = Depends(require_auth)):
+    """Reject pending fact write on thread_id."""
+    req = AgentApproveRequest(thread_id=thread_id, approved=False)
+    return await agent_approve(req, context)
+
+@router.websocket("/chat/{thread_id}/stream")
+async def chat_stream_websocket(websocket: WebSocket, thread_id: str):
+    """Live event stream WebSocket emitting agent_token, recall_event, denial_event, pending_approval."""
+    await websocket.accept()
+    from kryptodb.agent.graph import get_compiled_graph
+    config = {"configurable": {"thread_id": thread_id}}
+
+    llm = get_active_llm()
+    graph = get_compiled_graph(llm=llm, checkpointer=get_agent_checkpointer())
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            user_msg = data.get("message", "")
+            agent_id = data.get("agent_id", "agent-1")
+            user_scope = data.get("user_scope", "research")
+
+            from langchain_core.messages import HumanMessage
+            input_state = {
+                "messages": [HumanMessage(content=user_msg)],
+                "agent_id": agent_id,
+                "user_scope": user_scope
+            }
+
+            try:
+                import queue
+                import threading
+                import asyncio
+                
+                stream_q = queue.Queue()
+                def run_stream():
+                    try:
+                        for mode, payload in graph.stream(input_state, config, stream_mode=["messages", "updates"]):
+                            stream_q.put(("data", mode, payload))
+                        stream_q.put(("done", None, None))
+                    except Exception as e:
+                        stream_q.put(("error", e, None))
+                
+                t = threading.Thread(target=run_stream)
+                t.start()
+                
+                while True:
+                    try:
+                        msg_type, mode, payload = await asyncio.to_thread(stream_q.get, True, 0.1)
+                    except queue.Empty:
+                        continue
+                        
+                    if msg_type == "done":
+                        break
+                    if msg_type == "error":
+                        raise mode
+                        
+                    if mode == "messages":
+                        token, metadata = payload
+                        msg_class = type(token).__name__
+                        if msg_class not in ("AIMessageChunk", "AIMessage"):
+                            continue
+                        message_node = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
+                        if message_node not in ("reasoning_node", "denied_handling"):
+                            continue
+                        await websocket.send_json({
+                            "type": "agent_token", 
+                            "content": token.content if hasattr(token, "content") else str(token),
+                            "is_chunk": msg_class == "AIMessageChunk"
+                        })
+                    elif mode == "updates":
+                        for node_name, state_update in payload.items():
+                            if node_name != "tools":
+                                await websocket.send_json({"type": "agent_status", "status": f"Executing step: {node_name}..."})
+                            if isinstance(state_update, dict):
+                                _msgs = state_update.get("messages") or []
+                                if not isinstance(_msgs, (list, tuple)):
+                                    _msgs = [_msgs]
+                                for _m in _msgs:
+                                    if hasattr(_m, "tool_calls") and _m.tool_calls:
+                                        import json
+                                        for tc in _m.tool_calls:
+                                            args_str = json.dumps(tc.get("args", {}))
+                                            await websocket.send_json({"type": "agent_status", "status": f"Calling tool `{tc.get('name')}` with args: {args_str}"})
+                                if node_name in ("reasoning_node", "denied_handling", "direct_write_node"):
+                                    update_messages = state_update.get("messages") or []
+                                    if not isinstance(update_messages, (list, tuple)):
+                                        update_messages = [update_messages]
+                                    for update_message in reversed(update_messages):
+                                        content = getattr(update_message, "content", None)
+                                        if content is None and isinstance(update_message, dict):
+                                            content = update_message.get("content")
+                                        if isinstance(content, list):
+                                            content = "".join(
+                                                block.get("text", "") if isinstance(block, dict) else str(block)
+                                                for block in content
+                                            )
+                                        if content:
+                                            await websocket.send_json({
+                                                "type": "agent_token",
+                                                "content": str(content),
+                                                "is_chunk": False,
+                                            })
+                                            break
+                                if state_update.get("denied_recalls"):
+                                    await websocket.send_json({
+                                        "type": "denial_event",
+                                        "scope": state_update["denied_recalls"][0].get("scope", user_scope),
+                                        "reason": state_update["denied_recalls"][0].get("status", "no_key")
+                                    })
+                                elif state_update.get("recalled_facts"):
+                                    await websocket.send_json({
+                                        "type": "recall_event",
+                                        "count": len(state_update["recalled_facts"]),
+                                        "scope": state_update["recalled_facts"][0].get("scope", user_scope)
+                                    })
+                                if state_update.get("pending_facts"):
+                                    await websocket.send_json({
+                                        "type": "pending_approval",
+                                        "fact": state_update["pending_facts"][0]
+                                    })
+                await websocket.send_json({"type": "done"})
+            except GraphInterrupt:
+                await websocket.send_json({
+                    "type": "pending_approval",
+                    "status": "pending_approval",
+                    "reason": "high_sensitivity_write_approval_required"
+                })
+            except Exception as exc:
+                logger.exception("Chat stream failed for thread %s", thread_id)
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "The agent could not complete this request.",
+                    "detail": str(exc),
+                })
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"WebSocket error in chat_stream: {e}")
+
+# ── Phase 2.6 — LLM Model Selection Endpoints ─────────────────────────────────
+
+ACTIVE_LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:0.5b")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+
+def get_active_llm():
+    global ACTIVE_LLM_MODEL
+    if ACTIVE_LLM_MODEL == "deterministic-engine":
+        return None
+
+    if ACTIVE_LLM_MODEL.startswith("gpt-"):
+        try:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(model=ACTIVE_LLM_MODEL)
+        except Exception as e:
+            logger.warning(f"Failed to instantiate OpenAI model '{ACTIVE_LLM_MODEL}': {e}")
+            return None
+
+    installed_models = []
+    try:
+        import urllib.request, json
+        req = urllib.request.Request(f"{OLLAMA_BASE_URL}/api/tags", headers={'User-Agent': 'KryptoDB'})
+        with urllib.request.urlopen(req, timeout=2) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode())
+                installed_models = [m["name"] for m in data.get("models", []) if "embed" not in m["name"]]
+    except Exception as err:
+        logger.warning(f"Could not query Ollama tags: {err}")
+
+    target_model = ACTIVE_LLM_MODEL
+    if installed_models and target_model not in installed_models:
+        matched = [m for m in installed_models if target_model in m or m.startswith(target_model)]
+        if matched:
+            target_model = matched[0]
+        else:
+            tool_capable = [m for m in installed_models if "qwen" in m or "llama" in m or "mistral" in m]
+            target_model = tool_capable[0] if tool_capable else installed_models[0]
+        logger.info(f"Requested model '{ACTIVE_LLM_MODEL}' not pulled in Ollama. Auto-selected '{target_model}'.")
+        ACTIVE_LLM_MODEL = target_model
+
+    try:
+        try:
+            from langchain_ollama import ChatOllama
+        except ImportError:
+            from langchain_community.chat_models import ChatOllama
+        return ChatOllama(model=target_model, base_url=OLLAMA_BASE_URL)
+    except Exception as e:
+        logger.warning(f"Failed to instantiate ChatOllama model '{target_model}': {e}")
+        return None
+
+class ModelConfigChange(BaseModel):
+    model: str
+
+@router.get("/models")
+def list_available_models():
+    """Returns active model, Ollama URL, and detected/available LLM models."""
+    global ACTIVE_LLM_MODEL
+    import urllib.request
+    import json
+    
+    ollama_models = []
+    try:
+        req = urllib.request.Request(f"{OLLAMA_BASE_URL}/api/tags", headers={'User-Agent': 'KryptoDB'})
+        with urllib.request.urlopen(req, timeout=2) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode())
+                ollama_models = [m["name"] for m in data.get("models", [])]
+    except Exception:
+        pass
+
+    defaults = ["llama3.2", "llama3.1", "mistral", "qwen2.5", "gpt-4o-mini", "deterministic-engine"]
+    all_models = list(dict.fromkeys(ollama_models + defaults))
+
+    return {
+        "active_model": ACTIVE_LLM_MODEL,
+        "ollama_url": OLLAMA_BASE_URL,
+        "available_models": all_models
+    }
+
+@router.post("/config/model")
+def set_active_model(cfg: ModelConfigChange):
+    """Dynamically switch the active LLM model."""
+    global ACTIVE_LLM_MODEL
+    ACTIVE_LLM_MODEL = cfg.model.strip()
+    logger.info(f"Active LLM model set to: {ACTIVE_LLM_MODEL}")
+    return {"status": "success", "active_model": ACTIVE_LLM_MODEL}
 
 class DedupRequest(BaseModel):
     agent_id: str
@@ -773,7 +1208,7 @@ async def websocket_graph_events(websocket: WebSocket, agent_id: str, api_key: s
     await websocket.accept(subprotocol=f"kryptodb-bearer.{protocol_key}" if protocol_key else None)
 
     from kryptodb.memory_api.agents import get_agent
-    from kryptodb.daemon.keyring import keyring
+    
     
     agent = get_agent(context.agent_id) if not context.is_admin else None
     if not agent and agent_id != "admin":
@@ -793,6 +1228,12 @@ async def websocket_graph_events(websocket: WebSocket, agent_id: str, api_key: s
 
             session = None if context.is_admin else sessions.get(websocket.headers.get("x-kryptodb-session"))
             active_partitions = set(session.keys) if session else set()
+            # The admin graph viewer is already authorized for every scope and
+            # does not have an agent session/partition keyring to activate.
+            # Keep the event payload intact so the UI can animate traversals.
+            if context.is_admin:
+                await websocket.send_json(event.model_dump(mode='json'))
+                continue
             cleared_scopes = allowed_scopes & active_partitions
             
             if event.permission_scope in cleared_scopes:

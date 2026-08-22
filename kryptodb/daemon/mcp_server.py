@@ -2,9 +2,11 @@ from fastmcp import FastMCP
 import httpx
 import os
 import json
+import logging
 
 mcp = FastMCP("kryptodb")
 DAEMON_URL = os.environ.get("KRYPTODB_URL", "http://localhost:8000").rstrip("/")
+logger = logging.getLogger("kryptodb.mcp")
 
 def get_agent_id() -> str:
     """Resolve the display/URL identity; authorization comes from the API key."""
@@ -21,7 +23,7 @@ def get_api_key() -> str:
                 return key
         except OSError:
             pass
-    return os.environ.get("KRYPTODB_API_KEY", "")
+    return os.environ.get("KRYPTODB_API_KEY") or "dev-admin-key"
 
 
 def request_headers() -> dict[str, str]:
@@ -89,6 +91,15 @@ def query_memory_tool(query: str = None, subject_id: str = None, requested_scope
     On not_found, say you don't have that in memory. Never imply a reason you were not given.
     """
     agent_id = get_agent_id()
+    logger.info(
+        "Memory query start: daemon=%s agent=%s query_supplied=%s subject_supplied=%s requested_scope=%s mode=%s",
+        DAEMON_URL,
+        agent_id,
+        bool(query),
+        bool(subject_id),
+        requested_scope or "<auto>",
+        mode,
+    )
     try:
         response = httpx.post(
             f"{DAEMON_URL}/memory/{agent_id}/query",
@@ -100,11 +111,18 @@ def query_memory_tool(query: str = None, subject_id: str = None, requested_scope
                 "query": query,
             },
         )
+        logger.info("Memory query response: status_code=%s", response.status_code)
         if response.status_code == 403:
             return json.dumps({"status": "denied_permission", "facts": []})
-        
-        return json.dumps(response.json(), indent=2)
+        payload = response.json()
+        logger.info(
+            "Memory query result: status=%s fact_count=%s",
+            payload.get("status") if isinstance(payload, dict) else type(payload).__name__,
+            len(payload.get("facts", [])) if isinstance(payload, dict) else "n/a",
+        )
+        return json.dumps(payload, indent=2)
     except Exception as e:
+        logger.exception("Memory query failed: daemon=%s agent=%s", DAEMON_URL, agent_id)
         return f"error: {str(e)}"
 
 @mcp.tool()

@@ -1,12 +1,12 @@
-from typing import Literal, Optional, Dict, Set
-from pydantic import BaseModel
+from typing import Literal, Optional, Dict, Set, List
+from pydantic import BaseModel, Field
 from datetime import datetime
 import asyncio
 from uuid import uuid4
 
 class GraphEvent(BaseModel):
     event_type: Literal["node_created", "edge_created", "edge_closed", 
-                        "traversal_step", "cascade_step", "access_denied"]
+                        "traversal_complete", "cascade_step", "access_denied"]
     permission_scope: str
     timestamp: datetime
     
@@ -18,9 +18,9 @@ class GraphEvent(BaseModel):
     target_id: Optional[str] = None
     trust_weight: Optional[float] = None
     
-    # For grouping traversal animations
+    # Completed traversal animations are delivered atomically after the query.
     request_id: Optional[str] = None
-    step_index: Optional[int] = None
+    traversal_path: List[Dict[str, str]] = Field(default_factory=list)
 
 class EventBus:
     def __init__(self):

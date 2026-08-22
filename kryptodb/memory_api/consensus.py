@@ -8,8 +8,13 @@ def admit_fact(agent_id: str, proposed_edge: Edge, existing_edges: list[Edge]) -
     agent = get_agent(agent_id)
     if not agent:
         return "deny"
+
+    allowed = agent.get("allowed_scopes", [])
+    if agent_id != "admin" and allowed and "*" not in allowed:
+        if proposed_edge.permission_scope != "GLOBAL" and proposed_edge.permission_scope not in allowed:
+            return "deny"
         
-    trust_weight = agent["trust_prior"]
+    trust_weight = agent.get("trust_prior", 0.9)
     proposed_edge.trust_weight = trust_weight
     
     if not existing_edges:
