@@ -12,11 +12,11 @@ import os
 import uvicorn
 from pathlib import Path
 
-from kryptodb.daemon.keyring import keyring
 from kryptodb.integrity.partition_crypto import Encryptor
 from kryptodb.storage import neo4j_client, redis_client, bootstrap_storage
 from kryptodb.daemon.auth import AuthContext, api_keys, parse_bearer
-from kryptodb.daemon.sessions import SessionState, sessions
+from kryptodb.daemon.sessions import SessionState, sessions, SessionKeyring, keyring
+from kryptodb.daemon import event_bus
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,8 +90,6 @@ def get_request_session(
 
 class SessionStartRequest(BaseModel):
     active_partitions: List[str]
-
-from kryptodb.daemon.events import event_bus
 
 @router.get("/audit")
 def get_audit_log(context: AuthContext = Depends(require_auth)):
@@ -209,7 +207,7 @@ def post_memory_query(
 
 @router.get("/graph/snapshot")
 def get_graph_snapshot(agent_id: str, context: AuthContext = Depends(require_auth), x_kryptodb_session: str | None = Header(default=None)):
-    from kryptodb.memory_api.agents import get_agent
+    from kryptodb.memory_api import get_agent
     
     from kryptodb.storage.neo4j_client import neo4j_client
 
@@ -274,7 +272,7 @@ def get_graph_snapshot(agent_id: str, context: AuthContext = Depends(require_aut
 
     return {"nodes": nodes, "edges": edges}
 
-from kryptodb.graph.schema import Edge
+from kryptodb.graph import Edge
 class ProposeFactRequest(BaseModel):
     agent_id: str
     edge: dict
@@ -834,7 +832,7 @@ def reclassify_node(req: ReclassifyRequest, context: AuthContext = Depends(requi
             raise HTTPException(status_code=403, detail="Old scope must be active in the session")
         decrypt_keyring = session
         if context.is_admin:
-            from kryptodb.daemon.keyring import SessionKeyring
+            from kryptodb.daemon.sessions import SessionKeyring
             decrypt_keyring = SessionKeyring()
             decrypt_keyring.add_key(old_scope, encryptor._get_or_create_key(old_scope))
         envelope = encryptor.decrypt_knowledge(
@@ -885,7 +883,7 @@ def reclassify_node(req: ReclassifyRequest, context: AuthContext = Depends(requi
     if name_ct:
         decrypt_keyring = session
         if context.is_admin:
-            from kryptodb.daemon.keyring import SessionKeyring
+            from kryptodb.daemon.sessions import SessionKeyring
             decrypt_keyring = SessionKeyring()
             decrypt_keyring.add_key(old_scope, encryptor._get_or_create_key(old_scope))
         plaintext_name = encryptor.decrypt(old_scope, name_ct, decrypt_keyring)
@@ -1133,7 +1131,7 @@ class CreateApiKeyRequest(BaseModel):
 
 @app.post("/admin/api-keys")
 def create_api_key(req: CreateApiKeyRequest, context: AuthContext = Depends(require_admin)):
-    from kryptodb.memory_api.agents import get_agent
+    from kryptodb.memory_api import get_agent
     agent = get_agent(req.agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Unknown agent")

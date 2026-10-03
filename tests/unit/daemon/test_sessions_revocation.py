@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from kryptodb.daemon.server import app
 from kryptodb.daemon.sessions import sessions
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon import keyring
 from kryptodb.daemon.auth import api_keys
 
 

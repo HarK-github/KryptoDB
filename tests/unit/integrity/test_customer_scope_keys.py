@@ -4,7 +4,7 @@ import json
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon import keyring
 from kryptodb.integrity.partition_crypto import Encryptor
 
 

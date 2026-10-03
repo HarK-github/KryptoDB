@@ -1,6 +1,6 @@
 import pytest
 from pydantic import ValidationError
-from kryptodb.graph.schema import Edge, Node, ContentFields
+from kryptodb.graph import Edge, Node, ContentFields
 from kryptodb.graph.write_engine import WriteEngine
 from datetime import datetime, timezone
 

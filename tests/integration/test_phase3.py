@@ -1,6 +1,6 @@
 import pytest
 from kryptodb.integrity.partition_crypto import Encryptor
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon import keyring
 
 def test_inactive_partition_returns_ciphertext(monkeypatch):
     class MockRedisClient:

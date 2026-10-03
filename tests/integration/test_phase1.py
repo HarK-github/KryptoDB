@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from kryptodb.daemon.server import app
 from kryptodb.storage.neo4j_client import neo4j_client
 from kryptodb.storage.redis_client import redis_client
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon import keyring
 
 client = TestClient(app)
 
@@ -32,7 +32,7 @@ def test_requests_rejected_until_storage_is_live(monkeypatch):
     assert response.status_code == 503
 
 def test_daemon_restart_clears_session_keyring():
-    from kryptodb.daemon.keyring import SessionKeyring
+    from kryptodb.daemon import SessionKeyring
     k1 = SessionKeyring()
     k1.set_active_partitions({"TEST"})
     

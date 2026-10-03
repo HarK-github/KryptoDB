@@ -1,7 +1,7 @@
 import base64
 import pytest
 from kryptodb.integrity.partition_crypto import Encryptor
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon import keyring
 
 @pytest.fixture(autouse=True)
 def setup_scope_keys(monkeypatch):

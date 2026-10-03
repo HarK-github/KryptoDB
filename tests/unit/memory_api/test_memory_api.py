@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timezone, timedelta
-from kryptodb.graph.schema import Edge
-from kryptodb.memory_api.consensus import admit_fact
+from kryptodb.graph import Edge
+from kryptodb.memory_api import admit_fact
 from pathlib import Path
 
 def filter_valid_edges(edges: list[Edge]) -> list[Edge]:
@@ -25,7 +25,8 @@ def test_consensus_is_deterministic():
     assert res1 == res2 == "admit"
 
 def test_consensus_does_not_call_llm():
-    consensus_code = Path("kryptodb/memory_api/consensus.py").read_text()
+    import inspect
+    consensus_code = inspect.getsource(admit_fact)
     assert "requests" not in consensus_code
     assert "llm" not in consensus_code.lower()
     

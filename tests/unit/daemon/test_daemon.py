@@ -1,5 +1,5 @@
 import pytest
-from kryptodb.daemon.keyring import SessionKeyring
+from kryptodb.daemon import SessionKeyring
 
 def test_daemon_binds_localhost_only():
     """daemon configuration binds to 127.0.0.1, never 0.0.0.0 or an externally reachable interface."""

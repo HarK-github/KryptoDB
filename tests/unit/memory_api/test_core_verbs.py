@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock
 from kryptodb.memory_api.service import memory_service
-from kryptodb.daemon.events import event_bus
+from kryptodb.daemon import event_bus
 from kryptodb.daemon.auth import AuthContext
 
 

@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
-from kryptodb.graph.schema import Edge
+from kryptodb.graph import Edge
 from kryptodb.graph.write_engine import WriteEngine
 
 

@@ -12,15 +12,233 @@ from pydantic import BaseModel, Field, field_validator
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+import os
+import uuid
+import httpx
+from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import interrupt
-
-from kryptodb.agent.tools import KRYPTODB_TOOLS, query_memory_tool, propose_fact_tool
-from kryptodb.agent.extractor import extract_facts_from_messages, FactItem
-from kryptodb.graph.schema import is_sensitive_scope
+from kryptodb.graph import is_sensitive_scope
 
 logger = logging.getLogger(__name__)
+
+DAEMON_URL = os.environ.get("KRYPTODB_URL", "http://localhost:8000").rstrip("/")
+
+
+def get_agent_id() -> str:
+    return os.environ.get("AGENT_ID", "Agent-1")
+
+
+def get_api_key() -> str:
+    key_file = os.environ.get("KRYPTODB_API_KEY_FILE")
+    if key_file:
+        try:
+            with open(key_file, "r", encoding="utf-8") as fh:
+                key = fh.read().strip()
+            if key:
+                return key
+        except OSError:
+            pass
+    return os.environ.get("KRYPTODB_API_KEY", "dev-admin-key")
+
+
+def request_headers() -> dict[str, str]:
+    api_key = get_api_key()
+    headers = {"Authorization": f"Bearer {api_key}"}
+    session_id = os.environ.get("KRYPTODB_SESSION_ID")
+    if session_id:
+        headers["X-KryptoDB-Session"] = session_id
+    return headers
+
+
+@tool
+def query_memory_tool(
+    query: Optional[str] = None,
+    subject_id: Optional[str] = None,
+    requested_scope: Optional[str] = None,
+    mode: str = "local"
+) -> str:
+    """Retrieve facts from encrypted memory substrate."""
+    agent_id = get_agent_id()
+    try:
+        response = httpx.post(
+            f"{DAEMON_URL}/memory/{agent_id}/query",
+            headers=request_headers(),
+            json={
+                "mode": mode,
+                "requested_scope": requested_scope,
+                "subject_id": subject_id,
+                "query": query,
+            },
+            timeout=10.0
+        )
+        if response.status_code == 403:
+            return json.dumps({"status": "denied_permission", "facts": []})
+        elif response.status_code == 200:
+            return json.dumps(response.json(), indent=2)
+        else:
+            return json.dumps({"status": "not_found", "facts": []})
+    except Exception as exc:
+        return json.dumps({"status": "unavailable", "facts": [], "error": str(exc)})
+
+
+@tool
+def propose_fact_tool(
+    subject: Optional[str] = None,
+    predicate: Optional[str] = None,
+    obj: Optional[str] = None,
+    scope: Optional[str] = None,
+    description: Optional[str] = None,
+    dataset_id: Optional[str] = None
+) -> str:
+    """Store a factual relationship in the encrypted memory substrate."""
+    agent_id = get_agent_id()
+    subj_val = subject or agent_id
+    pred_val = predicate or "HAS_FACT"
+    obj_val = obj or "value"
+    scope_val = scope or "research"
+    try:
+        edge_data = {
+            "id": str(uuid.uuid4()),
+            "type": "FACT",
+            "predicate": pred_val,
+            "description": description or f"Fact {subj_val} {pred_val} {obj_val}",
+            "permission_scope": scope_val,
+            "source_agent_id": agent_id,
+            "subject_id": subj_val,
+            "object_id": obj_val,
+            "dataset_id": dataset_id,
+        }
+        response = httpx.post(
+            f"{DAEMON_URL}/memory",
+            headers=request_headers(),
+            json={"agent_id": agent_id, "edge": edge_data},
+            timeout=10.0
+        )
+        if response.status_code == 200:
+            return json.dumps(response.json(), indent=2)
+        else:
+            return json.dumps({"status": "rejected", "code": response.status_code})
+    except Exception as e:
+        return json.dumps({"status": "failed", "reason": str(e)})
+
+
+KRYPTODB_TOOLS = [query_memory_tool, propose_fact_tool]
+
+
+class FactItem(BaseModel):
+    """Structured Fact schema representation."""
+    subject: str = Field(description="Subject entity identifier")
+    predicate: str = Field(description="Relationship or predicate type")
+    obj: str = Field(description="Target object entity or attribute value")
+    scope: Optional[str] = Field(default="GLOBAL", description="Authorization/partition scope")
+    description: Optional[str] = Field(default=None, description="Optional textual description")
+
+
+class FactExtractionPatch(BaseModel):
+    """Container schema for extracted candidate facts."""
+    facts: List[FactItem] = Field(default_factory=list, description="List of extracted candidate facts")
+
+
+def resolve_scope_for_content(content: str, agent_id: str = "agent-1", default_scope: str = "AUTO") -> str:
+    """Intelligently infers the target knowledge graph partition scope from the content."""
+    try:
+        from kryptodb.memory_api import get_agent
+        agent = get_agent(agent_id)
+        scopes = agent.get("allowed_scopes", []) if agent else []
+    except Exception:
+        scopes = []
+
+    if not scopes:
+        return default_scope if default_scope not in ("AUTO", "GLOBAL", "*") else "GLOBAL"
+
+    if default_scope and default_scope not in ("AUTO", "GLOBAL", "*") and default_scope in scopes:
+        return default_scope
+
+    lower_c = content.lower()
+    for s in scopes:
+        clean_name = s.split(":")[-1].lower().replace("-", " ").replace("_", " ")
+        parts = clean_name.split()
+        if clean_name in lower_c or any(len(p) > 3 and p in lower_c for p in parts):
+            return s
+
+    return scopes[0] if scopes else "GLOBAL"
+
+
+def extract_facts_from_messages(
+    messages: List[Any],
+    llm: Optional[Any] = None,
+    agent_id: str = "agent-1",
+    user_scope: str = "AUTO"
+) -> List[Dict[str, Any]]:
+    """Extracts structured FactItem objects from conversation messages."""
+    if llm is not None and hasattr(llm, "with_structured_output"):
+        try:
+            structured_llm = llm.with_structured_output(FactExtractionPatch)
+            res = structured_llm.invoke(messages)
+            extracted = []
+            facts = res.facts if isinstance(res, FactExtractionPatch) else (res.get("facts", []) if isinstance(res, dict) else [])
+            for r in facts:
+                dumped = r.model_dump() if hasattr(r, "model_dump") else (r if isinstance(r, dict) else {})
+                if not dumped.get("scope") or dumped.get("scope") in ("AUTO", "GLOBAL"):
+                    dumped["scope"] = resolve_scope_for_content(str(dumped), agent_id=agent_id, default_scope=user_scope)
+                extracted.append(dumped)
+            if extracted:
+                return extracted
+        except Exception:
+            pass
+
+    latest_query = ""
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            latest_query = m.content
+            break
+        elif isinstance(m, dict) and m.get("role") == "user":
+            latest_query = m.get("content", "")
+            break
+
+    clean_query = latest_query.strip()
+    lower_q = clean_query.lower()
+
+    if lower_q.startswith(("store fact:", "fact:", "add fact:")):
+        raw_fact = clean_query.split(":", 1)[1].strip()
+        parts = [p.strip() for p in raw_fact.split(",") if p.strip()]
+        if len(parts) == 3:
+            subj, pred, obj = parts[0], parts[1], parts[2]
+        elif " is the " in raw_fact.lower():
+            idx = raw_fact.lower().find(" is the ")
+            subj = raw_fact[:idx].strip()
+            pred = "IS_THE"
+            obj = raw_fact[idx + 8:].strip()
+        elif " is " in raw_fact.lower():
+            idx = raw_fact.lower().find(" is ")
+            subj = raw_fact[:idx].strip()
+            pred = "IS"
+            obj = raw_fact[idx + 4:].strip()
+        else:
+            subj, pred, obj = agent_id, "STORED_FACT", raw_fact
+
+        resolved_scope = resolve_scope_for_content(raw_fact, agent_id=agent_id, default_scope=user_scope)
+        fact = FactItem(
+            subject=subj,
+            predicate=pred,
+            obj=obj,
+            scope=resolved_scope,
+            description=raw_fact
+        )
+        return [fact.model_dump()]
+
+    resolved_scope = resolve_scope_for_content(clean_query, agent_id=agent_id, default_scope=user_scope)
+    fact = FactItem(
+        subject=agent_id,
+        predicate="PROCESSED_QUERY",
+        obj=f"scope:{resolved_scope}",
+        scope=resolved_scope,
+        description=f"Extracted fact for query '{latest_query}'"
+    )
+    return [fact.model_dump()]
+
 
 
 def _fact_key(fact: Dict[str, Any]) -> tuple:
@@ -106,7 +324,7 @@ def create_recall_node(llm: Optional[Any] = None):
                     break
 
             try:
-                from kryptodb.memory_api.agents import get_agent
+                from kryptodb.memory_api import get_agent
                 agent = get_agent(state.agent_id)
                 allowed_scopes = agent.get("allowed_scopes", []) if agent else ([state.user_scope] if state.user_scope and state.user_scope != "AUTO" else [])
             except Exception:
@@ -114,7 +332,6 @@ def create_recall_node(llm: Optional[Any] = None):
 
             # Autonomous scope resolution: if AUTO or GLOBAL, match keywords or query across all authorized scopes
             if not state.user_scope or state.user_scope.upper() in ("AUTO", "GLOBAL", "*"):
-                from kryptodb.agent.extractor import resolve_scope_for_content
                 matched_scope = resolve_scope_for_content(latest_user_msg, agent_id=state.agent_id, default_scope="AUTO")
                 req_scope = matched_scope if (matched_scope != "GLOBAL" and (not allowed_scopes or matched_scope in allowed_scopes)) else None
             else:
@@ -235,7 +452,7 @@ def create_reasoning_node(llm: Optional[Any] = None):
                 break
 
         try:
-            from kryptodb.memory_api.agents import get_agent
+            from kryptodb.memory_api import get_agent
             agent = get_agent(state.agent_id)
             allowed_scopes = agent.get("allowed_scopes", []) if agent else ([state.user_scope] if state.user_scope and state.user_scope != "AUTO" else [])
         except Exception:

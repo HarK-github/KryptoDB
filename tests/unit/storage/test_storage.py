@@ -31,16 +31,20 @@ def test_redis_keyspaces_are_separate():
     # Placeholder for Phase 3 keyspace validation
     pass
 
-def test_bootstrap_is_idempotent():
-    from kryptodb.storage.bootstrap import bootstrap_storage
-    import kryptodb.storage.bootstrap as bs
+def test_bootstrap_is_idempotent(monkeypatch):
+    from kryptodb.storage import bootstrap_storage
+    import kryptodb.storage.neo4j_client as n4j
+    import kryptodb.storage.redis_client as red
     
-    bs.neo4j_client = MagicMock()
-    bs.redis_client = MagicMock()
+    mock_n4j = MagicMock()
+    mock_red = MagicMock()
+    monkeypatch.setattr(n4j, "neo4j_client", mock_n4j)
+    monkeypatch.setattr(red, "redis_client", mock_red)
     
     # Run twice
     bootstrap_storage()
     bootstrap_storage()
     
-    assert bs.neo4j_client.connect.call_count == 2
-    assert bs.redis_client.connect.call_count == 2
+    assert mock_n4j.connect.call_count == 2
+    assert mock_red.connect.call_count == 2
+

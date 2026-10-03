@@ -3,7 +3,7 @@ import logging
 import pytest
 from kryptodb.memory_api.service import memory_service
 from kryptodb.daemon.auth import AuthContext
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon import keyring
 
 
 def test_write_path_structured_logging_and_trace_propagation(caplog, monkeypatch):

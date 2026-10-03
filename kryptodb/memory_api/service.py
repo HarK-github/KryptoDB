@@ -8,14 +8,13 @@ import logging
 import json
 import uuid
 import os
-from kryptodb.graph.schema import Edge, is_sensitive_scope
+from kryptodb.graph import Edge, is_sensitive_scope
 from kryptodb.graph.read_engine import ReadEngine
 from kryptodb.graph.write_engine import WriteEngine
 from kryptodb.integrity.partition_crypto import Encryptor
 from kryptodb.storage.neo4j_client import neo4j_client
 from kryptodb.storage.redis_client import redis_client, WriteLockError
-from kryptodb.daemon.sessions import sessions, SessionState
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon.sessions import sessions, SessionState, keyring
 from kryptodb.daemon.auth import AuthContext, api_keys
 
 logger = logging.getLogger(__name__)
@@ -48,6 +47,24 @@ def get_agent(agent_id: str) -> Dict[str, Any] | None:
         
     lower_map = {k.lower(): v for k, v in agents.items()}
     return lower_map.get(agent_id.lower())
+
+
+def get_all_scopes() -> list[str]:
+    """Returns all scopes configured across registered agents."""
+    agents = _DEFAULT_AGENTS.copy()
+    json_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "agents.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r") as f:
+                agents.update(json.load(f))
+        except Exception:
+            pass
+    scopes = set()
+    for a in agents.values():
+        for s in a.get("allowed_scopes", []):
+            if s and s != "*":
+                scopes.add(s)
+    return sorted(scopes)
 
 
 def admit_fact(agent_id: str, proposed_edge: Edge, existing_edges: list[Edge]) -> str:
@@ -231,7 +248,6 @@ class MemoryService:
         """
         Single unified read path implementing 4-gate verification.
         """
-        from kryptodb.memory_api.agents import get_agent
         from kryptodb.integrity.partition_crypto import Encryptor
         from kryptodb.graph.read_engine import ReadEngine
         encryptor = Encryptor()
@@ -398,7 +414,6 @@ class MemoryService:
         Proposes and (subject to HITL) commits a fact.
         """
         trace_id = trace_id or f"trace-{uuid.uuid4().hex[:12]}"
-        from kryptodb.memory_api.agents import get_agent
         agent = get_agent(agent_id) if not (context and context.is_admin) else {"id": "admin", "allowed_scopes": [scope]}
         if not agent:
             return {"status": "forbidden", "detail": "Unknown agent", "trace_id": trace_id}
@@ -506,9 +521,8 @@ class MemoryService:
         - Records an audit ledger entry (who forgot what, when - not forgotten content).
         """
         from datetime import datetime, timezone
-        from kryptodb.memory_api.agents import get_agent
         from kryptodb.storage.neo4j_client import neo4j_client
-        from kryptodb.daemon.events import event_bus, GraphEvent
+        from kryptodb.daemon import event_bus, GraphEvent
         from kryptodb.integrity.partition_crypto import Encryptor
         trace_id = trace_id or f"trace-{uuid.uuid4().hex[:12]}"
 

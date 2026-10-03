@@ -1,6 +1,6 @@
 import pytest
 from kryptodb.daemon.server import SessionStartRequest, start_session, get_session
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon import keyring
 from kryptodb.daemon.mcp_server import propose_fact_tool, query_memory_tool
 
 def test_cli_starts_session_activates_partitions(monkeypatch):

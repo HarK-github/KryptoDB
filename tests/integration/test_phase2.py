@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timezone
-from kryptodb.graph.schema import Edge
-from kryptodb.memory_api.propose import propose_fact
+from kryptodb.graph import Edge
+from kryptodb.memory_api import propose_fact
 
 def filter_valid_edges(edges: list[Edge]) -> list[Edge]:
     now = datetime.now(timezone.utc)

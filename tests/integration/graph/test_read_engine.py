@@ -1,6 +1,6 @@
 import pytest
 from kryptodb.graph.read_engine import ReadEngine
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon import keyring
 
 def test_read_engine_respects_activation_gate(monkeypatch):
     monkeypatch.delenv("KRYPTODB_BOOTSTRAP_UNENCRYPTED", raising=False)

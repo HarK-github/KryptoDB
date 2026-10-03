@@ -1,6 +1,6 @@
 import pytest
 from langchain_core.messages import HumanMessage
-from kryptodb.agent.extractor import extract_facts_from_messages, FactItem
+from kryptodb.agent import extract_facts_from_messages, FactItem
 from kryptodb.agent.graph import get_compiled_graph, AgentState
 
 

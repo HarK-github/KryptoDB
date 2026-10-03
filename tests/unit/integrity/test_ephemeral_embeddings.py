@@ -1,5 +1,5 @@
 import pytest
-from kryptodb.integrity.embeddings import EphemeralEmbeddingService, cosine_similarity
+from kryptodb.integrity import EphemeralEmbeddingService, cosine_similarity
 from kryptodb.storage.neo4j_client import neo4j_client
 from kryptodb.storage.redis_client import redis_client
 
@@ -44,7 +44,7 @@ def test_no_embeddings_persisted_in_storage():
         assert "embed" not in k.lower()
 
     # 4. Check Neo4j: verify no 'embedding' property is written by WriteEngine
-    from kryptodb.graph.schema import Edge
+    from kryptodb.graph import Edge
     from kryptodb.graph.write_engine import WriteEngine
     
     engine = WriteEngine()

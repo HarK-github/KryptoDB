@@ -4,10 +4,11 @@ import hashlib
 import json
 import base64
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
-from kryptodb.daemon.keyring import keyring
+from kryptodb.daemon.sessions import keyring
 from kryptodb.storage.redis_client import redis_client
 from dotenv import load_dotenv
 
@@ -80,7 +81,7 @@ class Encryptor:
         configured = set(self.scope_keys)
         scopes = configured
         try:
-            from kryptodb.memory_api.agents import get_all_scopes
+            from kryptodb.memory_api import get_all_scopes
             scopes |= set(get_all_scopes())
         except Exception:
             pass
@@ -276,3 +277,75 @@ class Encryptor:
         res = h.hexdigest()
         _session_blind_idx_cache[cache_key] = res
         return res
+
+
+def cosine_similarity(v1: List[float], v2: List[float]) -> float:
+    import math
+    dot = sum(a * b for a, b in zip(v1, v2))
+    norm1 = math.sqrt(sum(a * a for a in v1))
+    norm2 = math.sqrt(sum(b * b for b in v2))
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return dot / (norm1 * norm2)
+
+
+class EphemeralEmbeddingService:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(EphemeralEmbeddingService, cls).__new__(cls)
+            cls._instance.model = None
+        return cls._instance
+
+    def get_model(self):
+        import os
+        if os.getenv("KRYPTODB_USE_REAL_EMBEDDINGS", "0") != "1":
+            return None
+        if self.model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+                self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            except Exception:
+                self.model = None
+        return self.model
+
+    def encode(self, text: str) -> List[float]:
+        """Encodes text to float vector. Uses fast word-hash embedding unless real embeddings enabled."""
+        import math
+        model = self.get_model()
+        if model is not None:
+            return model.encode(text).tolist()
+        
+        dim = 64
+        vec = [0.0] * dim
+        words = text.lower().split()
+        if not words:
+            return vec
+        for word in words:
+            h = int(hashlib.md5(word.encode("utf-8")).hexdigest(), 16)
+            idx = h % dim
+            sign = 1.0 if (h // dim) % 2 == 0 else -1.0
+            vec[idx] += sign
+        norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+        return [x / norm for x in vec]
+
+    def rank_facts_ephemeral(self, query: str, facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Ranks decrypted in-memory facts by cosine similarity against the query."""
+        if not facts:
+            return []
+
+        q_vec = self.encode(query)
+        scored = []
+        for f in facts:
+            text = f"{f.get('subject', '')} {f.get('predicate', '')} {f.get('object', '')} {f.get('description', '')}".strip()
+            score = cosine_similarity(q_vec, self.encode(text))
+            scored.append((score, f))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item[1] for item in scored]
+
+
+EmbeddingService = EphemeralEmbeddingService
+embedding_service = EphemeralEmbeddingService()
+

@@ -2,7 +2,7 @@
 Close-and-open supersession, lineage stamping.
 """
 from datetime import datetime, timezone
-from kryptodb.graph.schema import Edge
+from kryptodb.graph import Edge
 
 import logging
 import json
@@ -25,7 +25,7 @@ class WriteEngine:
             existing_edge.superseded_by = edge.id
             
         from kryptodb.integrity.partition_crypto import Encryptor
-        from kryptodb.daemon.keyring import keyring
+        from kryptodb.daemon.sessions import keyring
         encryptor = Encryptor()
         
         has_key = (
@@ -164,7 +164,7 @@ class WriteEngine:
             }))
             
             import asyncio
-            from kryptodb.daemon.events import event_bus, GraphEvent
+            from kryptodb.daemon import event_bus, GraphEvent
             try:
                 loop = asyncio.get_running_loop()
                 ev = GraphEvent(
@@ -229,7 +229,7 @@ class WriteEngine:
             )
             
             import asyncio
-            from kryptodb.daemon.events import event_bus, GraphEvent
+            from kryptodb.daemon import event_bus, GraphEvent
             try:
                 loop = asyncio.get_running_loop()
                 ev = GraphEvent(

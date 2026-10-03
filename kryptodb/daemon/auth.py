@@ -147,7 +147,7 @@ class ApiKeyRegistry:
     def effective_scopes(self, context: AuthContext) -> set[str]:
         if context.is_admin:
             return set()
-        from kryptodb.memory_api.agents import get_agent
+        from kryptodb.memory_api import get_agent
         agent = get_agent(context.agent_id)
         if not agent:
             return set()

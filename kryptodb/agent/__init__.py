@@ -5,6 +5,7 @@ Agent module for KryptoDB graph workflows.
 from kryptodb.agent.graph import (
     AgentState,
     FactItem,
+    FactExtractionPatch,
     create_agent_graph,
     create_extraction_subgraph,
     get_compiled_graph,
@@ -16,15 +17,14 @@ from kryptodb.agent.graph import (
     conflict_resolution_node,
     create_direct_write_node,
     is_sensitive_scope,
-)
-from kryptodb.agent.tools import (
     KRYPTODB_TOOLS,
     query_memory_tool,
     propose_fact_tool,
-)
-from kryptodb.agent.extractor import (
     extract_facts_from_messages,
-    FactExtractionPatch,
+    resolve_scope_for_content,
+    get_agent_id,
+    get_api_key,
+    request_headers,
 )
 
 __all__ = [
@@ -46,4 +46,8 @@ __all__ = [
     "query_memory_tool",
     "propose_fact_tool",
     "extract_facts_from_messages",
+    "resolve_scope_for_content",
+    "get_agent_id",
+    "get_api_key",
+    "request_headers",
 ]
