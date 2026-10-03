@@ -69,7 +69,7 @@ Before starting, ensure your Agent is configured with an API key that has access
 
 ---
 
-## 🔒 Phase 5: Zero-Trust & Access Revocation (Optional)
+## 🔒 Phase 5: Trusted Broker Security & Access Revocation (Optional)
 *Goal: Show what happens when access is denied.*
 
 **Prompt 5 (Run this in a NEW chat window or agent with restricted keys):**

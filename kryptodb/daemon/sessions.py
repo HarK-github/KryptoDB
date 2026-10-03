@@ -5,9 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import secrets
-from kryptodb.memory_api.session_search import SessionSearchIndex
-
-
 @dataclass
 class SessionState:
     session_id: str
@@ -15,7 +12,6 @@ class SessionState:
     key_id: str
     scopes: set[str]
     keys: dict[str, bytes] = field(default_factory=dict)
-    search_index: SessionSearchIndex = field(default_factory=SessionSearchIndex)
     expires_at: datetime | None = None
 
     def is_expired(self) -> bool:
@@ -23,7 +19,6 @@ class SessionState:
 
     def clear(self) -> None:
         self.keys.clear()
-        self.search_index.clear()
 
     @property
     def _keys(self) -> dict[str, bytes]:
@@ -62,6 +57,14 @@ class SessionStore:
             return None
         return session
 
+    def revoke(self, session_id: str) -> bool:
+        session = self._sessions.get(session_id)
+        if not session:
+            return False
+        session.clear()
+        self._sessions.pop(session_id, None)
+        return True
+
     def revoke_for_key(self, key_id: str) -> None:
         for session_id, session in list(self._sessions.items()):
             if session.key_id == key_id:
@@ -76,3 +79,42 @@ class SessionStore:
 
 
 sessions = SessionStore()
+
+
+class SessionKeyring:
+    """In-memory process-level session keyring holding active partition keys."""
+    def __init__(self):
+        self._active_partitions: set[str] = set()
+        self._keys: dict[str, bytes] = {}
+
+    def get_active_partitions(self) -> set[str]:
+        return self._active_partitions
+
+    def set_active_partitions(self, partitions: set[str]):
+        self._active_partitions = set(partitions)
+
+    def add_key(self, partition: str, key: bytes):
+        self._keys[partition] = key
+        
+    def get_key(self, partition: str) -> bytes | None:
+        return self._keys.get(partition)
+        
+    def remove_key(self, partition: str):
+        self._keys.pop(partition, None)
+        self._active_partitions.discard(partition)
+        from kryptodb.integrity.partition_crypto import clear_crypto_cache
+        clear_crypto_cache()
+
+    def revoke_partitions(self, partitions: set[str] | list[str]):
+        for p in partitions:
+            self.remove_key(p)
+
+    def clear(self):
+        from kryptodb.integrity.partition_crypto import clear_crypto_cache
+        self._active_partitions.clear()
+        self._keys.clear()
+        clear_crypto_cache()
+
+
+# Global singleton for the daemon process
+keyring = SessionKeyring()

@@ -5,7 +5,8 @@
     "allowed_scopes": [
       "research",
       "PROJECT:synapse",
-      "PROJECT:kryptodb"
+      "PROJECT:kryptodb",
+      "TEST"
     ]
   },
   "Agent-1": {

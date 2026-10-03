@@ -4,11 +4,16 @@ Close-and-open supersession, lineage stamping.
 from datetime import datetime, timezone
 from kryptodb.graph.schema import Edge
 
+import logging
+import json
+
+logger = logging.getLogger("kryptodb.trace")
+
 class WriteEngine:
     def _now(self) -> datetime:
         return datetime.now(timezone.utc)
         
-    def write_fact(self, edge: Edge, existing_edge: Edge | None = None) -> tuple[Edge, dict | None]:
+    def write_fact(self, edge: Edge, existing_edge: Edge | None = None, trace_id: str | None = None) -> tuple[Edge, dict | None]:
         now = self._now()
         edge.valid_from = now
         edge.valid_to = None
@@ -19,25 +24,17 @@ class WriteEngine:
             existing_edge.valid_to = now
             existing_edge.superseded_by = edge.id
             
-        import json
         from kryptodb.integrity.partition_crypto import Encryptor
-        from kryptodb.integrity.bootstrap_state import is_enabled as bootstrap_enabled
         from kryptodb.daemon.keyring import keyring
         encryptor = Encryptor()
         
-        bootstrap_mode = bootstrap_enabled()
         has_key = (
             edge.permission_scope in encryptor.scope_keys or
             keyring.get_key(edge.permission_scope) is not None or
-            (not encryptor.customer_keys_required and not bootstrap_mode)
+            (not encryptor.customer_keys_required)
         )
-        
-        is_pending = False
         if not has_key:
-            if bootstrap_mode:
-                is_pending = True
-            else:
-                raise RuntimeError(f"Customer scope key is not configured for: {edge.permission_scope}. Bootstrap mode is not enabled.")
+            raise RuntimeError(f"Customer scope key is not configured for: {edge.permission_scope}.")
         
         knowledge_envelope = {
             "subject": edge.subject_id,
@@ -52,25 +49,20 @@ class WriteEngine:
             "dataset_id": getattr(edge, "dataset_id", None),
         }
         
-        if is_pending:
-            subject_blind_idx = f"pending:{edge.subject_id}"
-            object_blind_idx = f"pending:{edge.object_id}"
-            knowledge_crypto = {
-                "knowledge_ct": None,
-                "knowledge_nonce": None,
-                "wrapped_dek": None,
-                "knowledge_kek_version": None,
-                "subject_search_idx": None,
-                "predicate_search_idx": None,
-                "object_search_idx": None,
-                "search_indexes": [],
-            }
-            pending_envelope_str = json.dumps(knowledge_envelope)
-        else:
-            subject_blind_idx = encryptor.compute_blind_idx(edge.permission_scope, edge.subject_id)
-            object_blind_idx = encryptor.compute_blind_idx(edge.permission_scope, edge.object_id)
-            knowledge_crypto = encryptor.encrypt_knowledge(edge.permission_scope, edge.id, knowledge_envelope)
-            pending_envelope_str = None
+        subject_blind_idx = encryptor.compute_blind_idx(edge.permission_scope, edge.subject_id)
+        object_blind_idx = encryptor.compute_blind_idx(edge.permission_scope, edge.object_id)
+        knowledge_crypto = encryptor.encrypt_knowledge(edge.permission_scope, edge.id, knowledge_envelope)
+        pending_envelope_str = None
+
+        logger.info(json.dumps({
+            "event": "stage_transition",
+            "path": "write",
+            "stage": "encrypt",
+            "trace_id": trace_id,
+            "fact_id": edge.id,
+            "scope": edge.permission_scope,
+            "status": "completed"
+        }))
         
         from kryptodb.storage.neo4j_client import neo4j_client
         if neo4j_client.driver:
@@ -107,8 +99,8 @@ class WriteEngine:
                 "subject_blind_idx": subject_blind_idx,
                 "object_blind_idx": object_blind_idx,
                 "edge_id": edge.id,
-                "encryption_status": "pending" if is_pending else "encrypted",
-                "pending_envelope": pending_envelope_str,
+                "encryption_status": "encrypted",
+                "pending_envelope": None,
                 "knowledge_ct": knowledge_crypto["knowledge_ct"],
                 "knowledge_nonce": knowledge_crypto["knowledge_nonce"],
                 "wrapped_dek": knowledge_crypto["wrapped_dek"],
@@ -124,10 +116,52 @@ class WriteEngine:
                 "derived_from": list(edge.derived_from) if edge.derived_from else [],
                 "is_suspicious": edge.is_suspicious
             }
-            records, _, _ = neo4j_client.execute_query_with_retry(query, **params)
             
-            s_id = records[0]["s_id"] if records else None
-            o_id = records[0]["o_id"] if records else None
+            def _write_and_supersede_tx(tx):
+                res = tx.run(query, params)
+                record = res.single()
+                sub_id = record["s_id"] if record else None
+                obj_id = record["o_id"] if record else None
+                
+                if existing_edge:
+                    update_query = """
+                    MATCH ()-[r:FACT {id: $old_id}]->()
+                    SET r.valid_to = $valid_to,
+                        r.superseded_by = $superseded_by,
+                        r.revoked_at = $valid_to
+                    """
+                    tx.run(
+                        update_query, 
+                        old_id=existing_edge.id,
+                        valid_to=now.isoformat(),
+                        superseded_by=edge.id
+                    )
+                return sub_id, obj_id
+            
+            if hasattr(neo4j_client, "execute_write_transaction"):
+                try:
+                    s_id, o_id = neo4j_client.execute_write_transaction(_write_and_supersede_tx, trace_id=trace_id)
+                except TypeError:
+                    s_id, o_id = neo4j_client.execute_write_transaction(_write_and_supersede_tx)
+            else:
+                try:
+                    records, _, _ = neo4j_client.execute_query_with_retry(query, trace_id=trace_id, **params)
+                except TypeError:
+                    records, _, _ = neo4j_client.execute_query_with_retry(query, **params)
+                if records:
+                    s_id = records[0].get("s_id")
+                    o_id = records[0].get("o_id")
+                else:
+                    s_id, o_id = None, None
+
+            logger.info(json.dumps({
+                "event": "stage_transition",
+                "path": "write",
+                "stage": "commit",
+                "trace_id": trace_id,
+                "fact_id": edge.id,
+                "status": "committed"
+            }))
             
             import asyncio
             from kryptodb.daemon.events import event_bus, GraphEvent
@@ -147,18 +181,6 @@ class WriteEngine:
                 pass
             
             if existing_edge:
-                update_query = """
-                MATCH ()-[r:FACT {id: $old_id}]->()
-                SET r.valid_to = $valid_to,
-                    r.superseded_by = $superseded_by,
-                    r.revoked_at = $valid_to
-                """
-                neo4j_client.execute_query_with_retry(
-                    update_query, 
-                    old_id=existing_edge.id,
-                    valid_to=now.isoformat(),
-                    superseded_by=edge.id
-                )
                 cascade_args = {
                     "revoked_edge_id": existing_edge.id,
                     "valid_to_iso": now.isoformat(),

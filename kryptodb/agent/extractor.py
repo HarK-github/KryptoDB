@@ -6,10 +6,7 @@ Transforms raw conversation turns into structured, schema-validated FactItem obj
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, BaseMessage
-try:
-    from trustcall import create_extractor
-except ImportError:
-    create_extractor = None
+
 
 
 class FactItem(BaseModel):
@@ -59,24 +56,19 @@ def extract_facts_from_messages(
 ) -> List[Dict[str, Any]]:
     """
     Extracts structured FactItem objects from conversation messages.
-    Uses Trustcall extractor when LLM is bound, or deterministic structured fallback.
+    Uses native LangChain structured output when LLM is bound, or deterministic structured fallback.
     """
-    if llm is not None and create_extractor is not None:
+    if llm is not None and hasattr(llm, "with_structured_output"):
         try:
-            extractor = create_extractor(llm, tools=[FactItem])
-            res = extractor.invoke({"messages": messages})
+            structured_llm = llm.with_structured_output(FactExtractionPatch)
+            res = structured_llm.invoke(messages)
             extracted = []
-            if hasattr(res, "responses") and res.responses:
-                for r in res.responses:
-                    if isinstance(r, FactItem):
-                        dumped = r.model_dump()
-                        if not dumped.get("scope") or dumped.get("scope") in ("AUTO", "GLOBAL"):
-                            dumped["scope"] = resolve_scope_for_content(str(dumped), agent_id=agent_id, default_scope=user_scope)
-                        extracted.append(dumped)
-                    elif isinstance(r, dict):
-                        if not r.get("scope") or r.get("scope") in ("AUTO", "GLOBAL"):
-                            r["scope"] = resolve_scope_for_content(str(r), agent_id=agent_id, default_scope=user_scope)
-                        extracted.append(r)
+            facts = res.facts if isinstance(res, FactExtractionPatch) else (res.get("facts", []) if isinstance(res, dict) else [])
+            for r in facts:
+                dumped = r.model_dump() if hasattr(r, "model_dump") else (r if isinstance(r, dict) else {})
+                if not dumped.get("scope") or dumped.get("scope") in ("AUTO", "GLOBAL"):
+                    dumped["scope"] = resolve_scope_for_content(str(dumped), agent_id=agent_id, default_scope=user_scope)
+                extracted.append(dumped)
             if extracted:
                 return extracted
         except Exception:

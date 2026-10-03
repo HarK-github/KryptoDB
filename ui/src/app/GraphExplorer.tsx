@@ -19,11 +19,9 @@ import React, { useEffect, useState, useRef, useCallback } from "react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
-import ReconnectingWebSocket from "reconnecting-websocket";
 import { Maximize2, Plus, RefreshCw, Filter, ChevronDown } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_KRYPTODB_URL || (typeof window !== 'undefined' ? `http://${window.location.hostname}:8000` : "http://127.0.0.1:8000");
-const WS_BASE = API_BASE.replace(/^http/, "ws") + "/ws";
 
 const getScopeColor = (scope: string) => {
   if (!scope) return "#888888";
@@ -34,7 +32,6 @@ const getScopeColor = (scope: string) => {
 
 export default function LiveGraph({ selected, onSelect }: any) {
   const [agentId] = useState("admin");
-  const ws = useRef<ReconnectingWebSocket | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
@@ -177,8 +174,6 @@ export default function LiveGraph({ selected, onSelect }: any) {
       defaultEdgeColor: "#888888",
       allowInvalidContainer: true,
       labelColor: { color: "#f8fafc" },
-      labelBgColor: { color: "#0e1015" },
-      defaultNodeHoverColor: "#0e1015",
     });
     sigmaRef.current = sigma;
 
@@ -241,50 +236,13 @@ export default function LiveGraph({ selected, onSelect }: any) {
     }
   };
 
-  const connectWebSocket = useCallback(() => {
-    if (ws.current) ws.current.close();
-    const apiKey = typeof window !== 'undefined' ? (window.localStorage.getItem("kryptodb_api_key") || "dev-admin-key") : "dev-admin-key";
-    const url = new URL(`${WS_BASE}/graph-events`);
-    url.searchParams.set("agent_id", agentId);
-    if (apiKey) url.searchParams.set("api_key", apiKey);
-    
-    ws.current = new ReconnectingWebSocket(url.toString());
-    
-    ws.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      
-      if (data.event_type === "traversal_complete") {
-         playTraversal(Array.isArray(data.traversal_path) ? data.traversal_path : []);
-      } else if (data.event_type === "edge_created") {
-         upsertEdge(data.edge_id, data.source_id, data.target_id, {
-           predicate: "FACT",
-           scope: data.permission_scope,
-           trust_weight: data.trust_weight || 0.5,
-           historical: false
-         });
-         updateScopes();
-      } else if (data.event_type === "edge_closed" || data.event_type === "cascade_step") {
-         if (data.edge_id && graph.hasEdge(data.edge_id)) {
-           // Garbage collection: actually drop the dead edge to prevent unbounded memory growth
-           const source = graph.source(data.edge_id);
-           const target = graph.target(data.edge_id);
-           graph.dropEdge(data.edge_id);
-           
-           // Clean up orphaned nodes
-           if (graph.degree(source) === 0) graph.dropNode(source);
-           if (graph.degree(target) === 0) graph.dropNode(target);
-         }
-      }
-      
-      if (!rafRef.current) sigmaRef.current?.refresh();
-    };
-  }, [agentId, graph, upsertEdge, playTraversal, updateScopes]);
-
   useEffect(() => {
     loadSnapshot();
-    connectWebSocket();
-    return () => ws.current?.close();
-  }, [connectWebSocket]);
+    const interval = setInterval(() => {
+      loadSnapshot();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Toolbar actions
   const zoomIn = () => {

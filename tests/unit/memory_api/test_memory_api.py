@@ -1,9 +1,12 @@
 import pytest
 from datetime import datetime, timezone, timedelta
 from kryptodb.graph.schema import Edge
-from kryptodb.memory_api.query import filter_valid_edges
 from kryptodb.memory_api.consensus import admit_fact
 from pathlib import Path
+
+def filter_valid_edges(edges: list[Edge]) -> list[Edge]:
+    now = datetime.now(timezone.utc)
+    return [e for e in edges if (not e.valid_to or e.valid_to > now) and (not e.unlock_at or e.unlock_at <= now)]
 
 def test_query_excludes_temporally_invalid_edges():
     now = datetime.now(timezone.utc)

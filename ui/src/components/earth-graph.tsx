@@ -1,133 +1,164 @@
 "use client"
 
-import { Canvas, useFrame } from "@react-three/fiber"
-import { OrbitControls, Stars } from "@react-three/drei"
-import { useMemo, useRef } from "react"
-import * as THREE from "three"
-
-// 1. Generate random points on a sphere
-function getRandomSpherePoint(radius: number) {
-  const u = Math.random()
-  const v = Math.random()
-  const theta = 2 * Math.PI * u
-  const phi = Math.acos(2 * v - 1)
-
-  return new THREE.Vector3(
-    radius * Math.sin(phi) * Math.cos(theta),
-    radius * Math.sin(phi) * Math.sin(theta),
-    radius * Math.cos(phi)
-  )
-}
-
-function KnowledgeGraph() {
-  const group = useRef<THREE.Group>(null)
-
-  // 2. Generate 52 random nodes on the surface
-  const NODE_COUNT = 52
-  const RADIUS = 1.03
-  const points = useMemo(() => {
-    return Array.from({ length: NODE_COUNT }, () => getRandomSpherePoint(RADIUS))
-  }, [])
-
-  // 3. Connect nodes to their nearest neighbors with jumping arcs
-  const edges = useMemo(() => {
-    const pairs: [number, number][] = []
-
-    for (let i = 0; i < points.length; i++) {
-      // Find the distances to all other points
-      const distances = points.map((p, idx) => ({
-        idx,
-        dist: p.distanceTo(points[i])
-      }))
-
-      // Sort by distance to find the closest neighbors
-      distances.sort((a, b) => a.dist - b.dist)
-
-      // Connect to the 2 nearest neighbors (skipping index 0 which is itself)
-      pairs.push([i, distances[1].idx])
-      pairs.push([i, distances[2].idx])
-    }
-
-    return pairs.map(([a, b]) => {
-      const p1 = points[a]
-      const p2 = points[b]
-
-      // Calculate the midpoint
-      const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5)
-      const distance = p1.distanceTo(p2)
-
-      // Push the midpoint outward based on the distance between the nodes to create a "jump" arc
-      const arcHeight = RADIUS + (distance * 0.4)
-      mid.normalize().multiplyScalar(arcHeight)
-
-      // Create a smooth quadratic bezier curve
-      const curve = new THREE.QuadraticBezierCurve3(p1, mid, p2)
-      return curve.getPoints(24)
-    })
-  }, [points])
-
-  useFrame((_, delta) => {
-    if (group.current) group.current.rotation.y += delta * 0.075
-  })
-
-  return (
-    <group ref={group}>
-      {/* Core Sphere */}
-      <mesh>
-        <sphereGeometry args={[1, 64, 64]} />
-        <meshStandardMaterial color="#0d3534" emissive="#0a4b48" emissiveIntensity={0.55} roughness={0.78} metalness={0.18} />
-      </mesh>
-
-      {/* Atmosphere/Glow */}
-      <mesh scale={1.012}>
-        <sphereGeometry args={[1, 64, 64]} />
-        <meshBasicMaterial color="#2dd4bf" transparent opacity={0.08} wireframe />
-      </mesh>
-
-      {/* Jumping Edges */}
-      {edges.map((edge, index) => (
-        <line key={index}>
-          <bufferGeometry>
-            <bufferAttribute
-              attach="attributes-position"
-              args={[new Float32Array(edge.flatMap((point) => point.toArray())), 3]}
-              count={edge.length}
-            />
-          </bufferGeometry>
-          <lineBasicMaterial color="#2dd4bf" transparent opacity={Math.random() * 0.5 + 0.2} />
-        </line>
-      ))}
-
-      {/* Nodes */}
-      {points.map((point, index) => (
-        <group key={index} position={point}>
-          <mesh>
-            <sphereGeometry args={[0.02, 16, 16]} />
-            <meshBasicMaterial color="#dffffb" />
-          </mesh>
-          <mesh scale={1.8}>
-            <sphereGeometry args={[0.02, 16, 16]} />
-            <meshBasicMaterial color="#2dd4bf" transparent opacity={0.3} />
-          </mesh>
-        </group>
-      ))}
-    </group>
-  )
-}
+import { useMemo } from "react"
 
 export default function EarthGraph() {
+  // Generate deterministic nodes on a 2D isometric projection of a network sphere
+  const { nodes, edges } = useMemo(() => {
+    const rawNodes = []
+    const count = 42
+    const centerX = 250
+    const centerY = 250
+    const radius = 170
+
+    for (let i = 0; i < count; i++) {
+      const theta = (i / count) * 2 * Math.PI
+      const phi = Math.acos(-1 + (2 * i) / count)
+      const x = centerX + radius * Math.sin(phi) * Math.cos(theta)
+      const y = centerY + radius * Math.cos(phi) * 0.85
+      const depth = Math.sin(phi) * Math.sin(theta)
+      rawNodes.push({ id: i, x, y, depth, isMajor: i % 5 === 0 })
+    }
+
+    const rawEdges: { x1: number; y1: number; x2: number; y2: number; opacity: number }[] = []
+    for (let i = 0; i < rawNodes.length; i++) {
+      const target1 = (i + 1) % rawNodes.length
+      const target2 = (i + 4) % rawNodes.length
+      rawEdges.push({
+        x1: rawNodes[i].x,
+        y1: rawNodes[i].y,
+        x2: rawNodes[target1].x,
+        y2: rawNodes[target1].y,
+        opacity: Math.max(0.15, (rawNodes[i].depth + 1) / 3)
+      })
+      if (i % 2 === 0) {
+        rawEdges.push({
+          x1: rawNodes[i].x,
+          y1: rawNodes[i].y,
+          x2: rawNodes[target2].x,
+          y2: rawNodes[target2].y,
+          opacity: Math.max(0.1, (rawNodes[i].depth + 1) / 4)
+        })
+      }
+    }
+
+    return { nodes: rawNodes, edges: rawEdges }
+  }, [])
+
   return (
-    <div className="earth-scene" style={{ width: '100vw', height: '100vh', background: '#000' }} aria-label="Interactive 3D Earth with a cryptographic knowledge graph">
-      <Canvas camera={{ position: [0, 0.1, 2.8], fov: 45 }} dpr={[1, 1.6]} gl={{ antialias: true, alpha: true }}>
-        <ambientLight intensity={1.2} />
-        <directionalLight position={[3, 2, 4]} intensity={2.4} color="#b8fff8" />
-        <pointLight position={[-3, -1, 2]} intensity={1.5} color="#2dd4bf" />
-        <Stars radius={8} depth={3} count={1500} factor={1.5} saturation={0} fade speed={0.15} />
-        <KnowledgeGraph />
-        <OrbitControls enablePan={false} enableZoom={true} autoRotate autoRotateSpeed={0.45} minPolarAngle={Math.PI / 2.7} maxPolarAngle={Math.PI / 1.75} />
-      </Canvas>
-      <div className="earth-label" style={{ position: 'absolute', bottom: 40, left: 40, color: '#2dd4bf', fontFamily: 'monospace' }}>
-        <span className="earth-pulse" />LIVE MEMORY TOPOLOGY <b>52 nodes online</b>
+    <div
+      className="earth-scene"
+      style={{
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        position: "relative",
+        overflow: "hidden"
+      }}
+      aria-label="Cryptographic knowledge graph network visualization"
+    >
+      <svg
+        viewBox="0 0 500 500"
+        style={{ width: "min(90vw, 520px)", height: "min(90vw, 520px)" }}
+        className="spinning-network"
+      >
+        <defs>
+          <radialGradient id="sphereGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#0d3534" stopOpacity="0.8" />
+            <stop offset="70%" stopColor="#0a4b48" stopOpacity="0.4" />
+            <stop offset="100%" stopColor="#041212" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="centerCore" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="#0a4b48" stopOpacity="0" />
+          </radialGradient>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="3.5" result="coloredBlur" />
+            <feMerge>
+              <feMergeNode in="coloredBlur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+
+        {/* Ambient background glow */}
+        <circle cx="250" cy="250" r="210" fill="url(#sphereGlow)" />
+        <circle cx="250" cy="250" r="140" fill="url(#centerCore)" />
+
+        {/* Outer orbital rings */}
+        <circle cx="250" cy="250" r="190" fill="none" stroke="#2dd4bf" strokeWidth="0.8" strokeDasharray="4 6" opacity="0.25" />
+        <ellipse cx="250" cy="250" rx="195" ry="90" fill="none" stroke="#2dd4bf" strokeWidth="0.8" opacity="0.3" transform="rotate(-25 250 250)" />
+        <ellipse cx="250" cy="250" rx="195" ry="90" fill="none" stroke="#2dd4bf" strokeWidth="0.6" strokeDasharray="3 7" opacity="0.2" transform="rotate(35 250 250)" />
+
+        {/* Graph Edges */}
+        <g stroke="#2dd4bf">
+          {edges.map((edge, idx) => (
+            <line
+              key={idx}
+              x1={edge.x1}
+              y1={edge.y1}
+              x2={edge.x2}
+              y2={edge.y2}
+              strokeWidth="0.9"
+              strokeOpacity={edge.opacity}
+            />
+          ))}
+        </g>
+
+        {/* Graph Nodes */}
+        {nodes.map((node) => (
+          <g key={node.id} filter={node.isMajor ? "url(#glow)" : undefined}>
+            <circle
+              cx={node.x}
+              cy={node.y}
+              r={node.isMajor ? 4.5 : 2.5}
+              fill={node.isMajor ? "#dffffb" : "#2dd4bf"}
+              opacity={Math.max(0.35, (node.depth + 1.2) / 2)}
+            />
+            {node.isMajor && (
+              <circle
+                cx={node.x}
+                cy={node.y}
+                r={9}
+                fill="none"
+                stroke="#2dd4bf"
+                strokeWidth="0.8"
+                opacity="0.4"
+              />
+            )}
+          </g>
+        ))}
+      </svg>
+
+      <div
+        className="earth-label"
+        style={{
+          position: "absolute",
+          bottom: 24,
+          left: 24,
+          color: "#2dd4bf",
+          fontFamily: "monospace",
+          fontSize: "12px",
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          letterSpacing: "0.08em"
+        }}
+      >
+        <span
+          className="earth-pulse"
+          style={{
+            display: "inline-block",
+            width: "8px",
+            height: "8px",
+            borderRadius: "50%",
+            backgroundColor: "#2dd4bf",
+            boxShadow: "0 0 8px #2dd4bf"
+          }}
+        />
+        LIVE MEMORY TOPOLOGY <b>42 encrypted nodes active</b>
       </div>
     </div>
   )

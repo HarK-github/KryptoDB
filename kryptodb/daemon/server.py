@@ -14,13 +14,9 @@ from pathlib import Path
 
 from kryptodb.daemon.keyring import keyring
 from kryptodb.integrity.partition_crypto import Encryptor
-from kryptodb.storage.neo4j_client import neo4j_client
-from kryptodb.storage.redis_client import redis_client
-from kryptodb.storage.bootstrap import bootstrap_storage
+from kryptodb.storage import neo4j_client, redis_client, bootstrap_storage
 from kryptodb.daemon.auth import AuthContext, api_keys, parse_bearer
 from kryptodb.daemon.sessions import SessionState, sessions
-from kryptodb.integrity.knowledge_migration import migrate_legacy_fact
-from kryptodb.integrity.bootstrap_state import is_enabled as bootstrap_enabled, lock as lock_bootstrap, status as bootstrap_status
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -134,10 +130,7 @@ def start_session(req: SessionStartRequest, context: AuthContext = Depends(requi
     session = sessions.create(context.agent_id, context.key_id, allowed_scopes)
     try:
         for partition in requested:
-            if bootstrap_enabled() and partition not in encryptor.scope_keys:
-                session.keys[partition] = b""
-            else:
-                session.keys[partition] = encryptor._get_or_create_key(partition)
+            session.keys[partition] = encryptor._get_or_create_key(partition)
     except RuntimeError as exc:
         sessions.revoke_for_key(context.key_id)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -152,41 +145,9 @@ def start_session(req: SessionStartRequest, context: AuthContext = Depends(requi
 
 def _legacy_start_session(req: SessionStartRequest):
     keyring.clear()
-    
-    from kryptodb.memory_api.session_search import session_index
-    session_index.clear()
-    
     for p in req.active_partitions:
         key = encryptor._get_or_create_key(p)
         keyring.add_key(p, key)
-        
-    # Stream decrypted names into Bloom filter
-    from kryptodb.storage.neo4j_client import neo4j_client
-    if neo4j_client.driver:
-        query = """
-        MATCH (s)-[r:FACT]->(o)
-        WHERE r.permission_scope IN $scopes AND r.valid_to IS NULL
-        RETURN s, r, o
-        """
-        records, _, _ = neo4j_client.execute_query_with_retry(query, scopes=req.active_partitions)
-        for record in records:
-            s_node = record["s"]
-            o_node = record["o"]
-            r_edge = record["r"]
-            scope = r_edge["permission_scope"]
-            
-            s_name = encryptor.decrypt(scope, s_node.get("name_ct")) if s_node.get("name_ct") else s_node.get("id")
-            o_name = encryptor.decrypt(scope, o_node.get("name_ct")) if o_node.get("name_ct") else o_node.get("id")
-            
-            edge_dict = {
-                "edge_id": r_edge["id"],
-                "subject": s_name,
-                "predicate": r_edge["predicate"],
-                "object": o_name,
-                "permission_scope": scope
-            }
-            session_index.add_edge(edge_dict)
-            
     return {"active_partitions": req.active_partitions, "status": "active"}
 
 @router.get("/session")
@@ -205,84 +166,18 @@ def get_session(context: AuthContext = Depends(require_auth), x_kryptodb_session
 
 @router.get("/memory/{agent_id}")
 def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = None, requested_scope: str = None, subject_id: str = None, mode: str = "local", context: AuthContext = Depends(require_auth), x_kryptodb_session: str | None = Header(default=None)):
-    from kryptodb.memory_api.agents import get_agent
-    from kryptodb.graph.read_engine import ReadEngine
-    if isinstance(context, AuthContext):
-        if not context.is_admin and context.agent_id != agent_id:
-            raise HTTPException(status_code=403, detail="Agent identity is bound to the API key")
-        session = get_request_session(context, x_kryptodb_session)
-        active_scopes = set(session.keys) if session else set()
-        if context.is_admin:
-            target = get_agent(agent_id)
-            agent = target if target else {"id": "admin", "allowed_scopes": list(keyring._keys.keys())}
-        else:
-            agent = get_agent(context.agent_id)
-            if not agent:
-                raise HTTPException(status_code=403, detail="Unknown agent")
-    else:
-        session = None
-        active_scopes = set(keyring._keys)
-        agent = get_agent(agent_id) or {"id": agent_id, "allowed_scopes": list(keyring._keys.keys())}
-    if not agent:
-        raise HTTPException(status_code=403, detail="Unknown agent")
-
-    allowed_agent_scopes = set(agent.get("allowed_scopes", []))
-    if "*" in allowed_agent_scopes or (isinstance(context, AuthContext) and context.is_admin and not allowed_agent_scopes):
-        allowed_agent_scopes = set(keyring._keys.keys())
-
-    if requested_scope and requested_scope.lower() not in ("all", "*", "global"):
-        req_scopes = [s.strip() for s in requested_scope.split(",") if s.strip()]
-        for s in req_scopes:
-            if s not in allowed_agent_scopes and not (isinstance(context, AuthContext) and context.is_admin):
-                return {"status": "denied_permission", "facts": []}
-            if s not in active_scopes and not (isinstance(context, AuthContext) and context.is_admin):
-                return {"status": "denied_inactive", "facts": []}
-        scopes_to_query = req_scopes
-    else:
-        if isinstance(context, AuthContext) and context.is_admin:
-            scopes_to_query = sorted(allowed_agent_scopes or set(keyring._keys.keys()))
-        else:
-            scopes_to_query = sorted(allowed_agent_scopes & (active_scopes or allowed_agent_scopes))
-
-    if mode == "global":
-        from kryptodb.graph.gds_engine import GDSEngine
-        gds = GDSEngine()
-        communities = gds.get_communities(scopes_to_query)
-        if not communities:
-            # Trigger detection if communities are empty
-            for scope in scopes_to_query:
-                gds.run_louvain_community_detection(scope)
-            communities = gds.get_communities(scopes_to_query)
-            
-        return {"status": "ok", "mode": "global", "communities": communities}
-
-    if isinstance(context, AuthContext) and context.is_admin:
-        for scope in scopes_to_query:
-            if scope not in keyring._keys:
-                try:
-                    keyring.add_key(scope, encryptor._get_or_create_key(scope))
-                except Exception as e:
-                    logger.debug(f"Scope {scope} key not available: {e}")
-            if session and scope not in session._keys:
-                k = keyring.get_key(scope)
-                if k:
-                    session.add_key(scope, k)
-        effective_scopes = [s for s in scopes_to_query if s in keyring._keys]
-    else:
-        effective_scopes = list(set(scopes_to_query) & (active_scopes or set(keyring._keys.keys())))
-    if not effective_scopes:
-        return {"status": "denied_inactive", "facts": []}
-
-    read_engine = ReadEngine(
-        session_keyring=session,
-        session_search_index=session.search_index if session else None,
+    session = get_request_session(context, x_kryptodb_session) if isinstance(context, AuthContext) else None
+    res = memory_service.query_facts(
+        agent_id=agent_id,
+        requested_scope=requested_scope,
+        subject_id=subject_id,
+        query=query,
+        session=session,
+        context=context,
     )
-    facts = read_engine.retrieve_active_facts(effective_scopes, subject_id=subject_id, query_str=query)
-    
-    if not facts:
-        return {"status": "not_found", "facts": []}
-        
-    return {"status": "ok", "mode": "local", "facts": facts}
+    if res.get("status") == "forbidden":
+        raise HTTPException(status_code=403, detail=res.get("detail", "Forbidden"))
+    return res
 
 
 class MemoryQueryRequest(BaseModel):
@@ -409,53 +304,117 @@ def get_task_status(task_id: str, context: AuthContext = Depends(require_auth)):
         status = status.decode('utf-8')
     return {"task_id": task_id, "status": status}
 
-@router.post("/memory")
-def post_memory(req: ProposeFactRequest, background_tasks: BackgroundTasks, context: AuthContext = Depends(require_auth)):
-    from kryptodb.memory_api.propose import propose_fact
-    from kryptodb.memory_api.conflict import detect_conflict
-    
-    edge = Edge(**req.edge)
+# --- Core Verbs API Surface (Phase 6) ---
+class RememberRequest(BaseModel):
+    agent_id: str = "Agent-1"
+    fact: dict
+    scope: str
+    session_id: str | None = None
 
-    if isinstance(context, AuthContext):
-        if not context.is_admin and req.agent_id != context.agent_id:
-            raise HTTPException(status_code=403, detail="Agent identity is bound to the API key")
-        if not context.is_admin and edge.permission_scope not in api_keys.effective_scopes(context):
-            raise HTTPException(status_code=403, detail="Fact scope is outside API-key scope")
-        proposer_id = req.agent_id or context.agent_id
-    else:
-        proposer_id = req.agent_id
-    
-    # Prompt injection content-flagging heuristic (Phase 8.1)
-    suspicious_patterns = [
-        "ignore previous", "system prompt", "bypass", "you are now",
-        "<script>", "sql injection", "drop table"
-    ]
-    
-    content_to_check = f"{edge.subject_id} {edge.predicate} {edge.object_id}".lower()
-    if any(pattern in content_to_check for pattern in suspicious_patterns):
-        edge.is_suspicious = True
-        logger.warning(f"Flagged suspicious content in proposed edge {edge.id}")
+class RecallRequest(BaseModel):
+    query: str | None = None
+    scope: str | None = None
+    subject_id: str | None = None
+    session_id: str | None = None
 
+class ForgetRequest(BaseModel):
+    scope: str
+    fact_id: str | None = None
+    subject: str | None = None
+    predicate: str | None = None
+    approved: bool = False
+
+@router.post("/memory/remember")
+def post_memory_remember(
+    req: RememberRequest,
+    background_tasks: BackgroundTasks,
+    context: AuthContext = Depends(require_auth),
+    x_trace_id: str | None = Header(default=None)
+):
+    """Core Verb: remember(fact, scope, session_id?)"""
+    from kryptodb.memory_api.service import memory_service
+    from kryptodb.storage.redis_client import WriteLockError
     try:
-        existing_edges = detect_conflict(edge.subject_id, edge.predicate, edge.object_id, edge.permission_scope)
-        status, committed_edge, cascade_args = propose_fact(proposer_id, edge, False, existing_edges)
+        res = memory_service.remember(
+            agent_id=req.agent_id,
+            fact=req.fact,
+            scope=req.scope,
+            session_id=req.session_id,
+            context=context,
+            background_tasks=background_tasks,
+            trace_id=x_trace_id
+        )
+    except WriteLockError:
+        raise HTTPException(status_code=409, detail="Conflict: Concurrent write lock active")
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    
-    response = {"status": status}
-    
-    if cascade_args:
-        task_id = str(uuid.uuid4())
-        background_tasks.add_task(
-            run_cascade_task, 
-            task_id, 
-            cascade_args["revoked_edge_id"], 
-            cascade_args["valid_to_iso"], 
-            cascade_args["superseded_by_id"]
-        )
-        response["task_id"] = task_id
-        
-    return response
+
+    if res.get("status") == "forbidden":
+        raise HTTPException(status_code=403, detail=res.get("detail", "Forbidden"))
+    elif res.get("status") == "hitl_required":
+        raise HTTPException(status_code=422, detail=res)
+    return res
+
+@router.post("/memory/recall")
+def post_memory_recall(
+    req: RecallRequest,
+    context: AuthContext = Depends(require_auth),
+    x_kryptodb_session: str | None = Header(default=None),
+    x_trace_id: str | None = Header(default=None)
+):
+    """Core Verb: recall(query, scope, session_id?)"""
+    from kryptodb.memory_api.service import memory_service
+    agent_id = context.agent_id if (isinstance(context, AuthContext) and not context.is_admin) else "admin"
+    session_id = req.session_id or x_kryptodb_session
+    res = memory_service.recall(
+        agent_id=agent_id,
+        query=req.query,
+        scope=req.scope,
+        subject_id=req.subject_id,
+        session_id=session_id,
+        context=context,
+        trace_id=x_trace_id
+    )
+    if res.get("status") == "forbidden":
+        raise HTTPException(status_code=403, detail=res.get("detail", "Forbidden"))
+    return res
+
+@router.post("/memory/forget")
+def post_memory_forget(
+    req: ForgetRequest,
+    context: AuthContext = Depends(require_auth),
+    x_kryptodb_session: str | None = Header(default=None),
+    x_trace_id: str | None = Header(default=None)
+):
+    """Core Verb: forget(fact_id | subject+predicate, scope)"""
+    from kryptodb.memory_api.service import memory_service
+    agent_id = context.agent_id if (isinstance(context, AuthContext) and not context.is_admin) else "admin"
+    res = memory_service.forget(
+        agent_id=agent_id,
+        scope=req.scope,
+        fact_id=req.fact_id,
+        subject=req.subject,
+        predicate=req.predicate,
+        session_id=x_kryptodb_session,
+        context=context,
+        approved=req.approved,
+        trace_id=x_trace_id
+    )
+    if res.get("status") == "forbidden":
+        raise HTTPException(status_code=403, detail=res.get("detail", "Forbidden"))
+    elif res.get("status") == "hitl_required":
+        raise HTTPException(status_code=422, detail=res)
+    elif res.get("status") == "invalid_request":
+        raise HTTPException(status_code=400, detail=res.get("detail", "Invalid request"))
+    return res
+
+@router.post("/memory/improve")
+def post_memory_improve(session_id: str | None = None):
+    """Core Verb: improve(session_id) [Designed-but-not-built]"""
+    return {
+        "status": "not_implemented",
+        "message": "Session distillation (improve) is a designed-but-not-built operation scheduled for future release."
+    }
 
 class AgentChatRequest(BaseModel):
     agent_id: str = "agent-1"
@@ -641,23 +600,6 @@ def get_chat_history(thread_id: str, context: AuthContext = Depends(require_auth
         "pending_facts": state_snapshot.values.get("pending_facts", []) if state_snapshot.values else []
     }
 
-@router.post("/chat/{thread_id}/message")
-async def chat_message(thread_id: str, req: AgentChatRequest, context: AuthContext = Depends(require_auth)):
-    """Send user message to thread_id."""
-    req.thread_id = thread_id
-    return await agent_chat(req, context)
-
-@router.post("/chat/{thread_id}/approve")
-async def chat_approve(thread_id: str, context: AuthContext = Depends(require_auth)):
-    """Approve pending fact write on thread_id."""
-    req = AgentApproveRequest(thread_id=thread_id, approved=True)
-    return await agent_approve(req, context)
-
-@router.post("/chat/{thread_id}/reject")
-async def chat_reject(thread_id: str, context: AuthContext = Depends(require_auth)):
-    """Reject pending fact write on thread_id."""
-    req = AgentApproveRequest(thread_id=thread_id, approved=False)
-    return await agent_approve(req, context)
 
 @router.websocket("/chat/{thread_id}/stream")
 async def chat_stream_websocket(websocket: WebSocket, thread_id: str):
@@ -684,32 +626,7 @@ async def chat_stream_websocket(websocket: WebSocket, thread_id: str):
             }
 
             try:
-                import queue
-                import threading
-                import asyncio
-                
-                stream_q = queue.Queue()
-                def run_stream():
-                    try:
-                        for mode, payload in graph.stream(input_state, config, stream_mode=["messages", "updates"]):
-                            stream_q.put(("data", mode, payload))
-                        stream_q.put(("done", None, None))
-                    except Exception as e:
-                        stream_q.put(("error", e, None))
-                
-                t = threading.Thread(target=run_stream)
-                t.start()
-                
-                while True:
-                    try:
-                        msg_type, mode, payload = await asyncio.to_thread(stream_q.get, True, 0.1)
-                    except queue.Empty:
-                        continue
-                        
-                    if msg_type == "done":
-                        break
-                    if msg_type == "error":
-                        raise mode
+                async for mode, payload in graph.astream(input_state, config, stream_mode=["messages", "updates"]):
                         
                     if mode == "messages":
                         token, metadata = payload
@@ -881,197 +798,15 @@ def set_active_model(cfg: ModelConfigChange):
     logger.info(f"Active LLM model set to: {ACTIVE_LLM_MODEL}")
     return {"status": "success", "active_model": ACTIVE_LLM_MODEL}
 
-class DedupRequest(BaseModel):
-    agent_id: str
+# Note: /dedup and GDS KNN clustering were excised in Phase 5 as dead code
 
-def run_knn_task(task_id: str, scopes: list[str]):
-    from kryptodb.storage.redis_client import redis_client
-    redis_client.client.set(f"task:{task_id}", "running", ex=3600)
-    
-    from kryptodb.graph.gds_engine import GDSEngine
-    try:
-        gds = GDSEngine()
-        for scope in scopes:
-            gds.run_knn_similarity(scope)
-        redis_client.client.set(f"task:{task_id}", "completed", ex=3600)
-    except Exception as e:
-        redis_client.client.set(f"task:{task_id}", f"failed: {str(e)}", ex=3600)
 
-@router.post("/dedup")
-def trigger_knn_dedup(req: DedupRequest, background_tasks: BackgroundTasks):
-    from kryptodb.memory_api.agents import get_agent
-    agent = get_agent(req.agent_id)
-    if not agent:
-        raise HTTPException(status_code=403, detail="Unknown agent")
-        
-    task_id = str(uuid.uuid4())
-    background_tasks.add_task(run_knn_task, task_id, agent["allowed_scopes"])
-    
-    return {"status": "accepted", "task_id": task_id}
-
-class OnboardRequest(BaseModel):
-    agent_id: str
-    sample_facts: list[str]
-    trust_prior: float = 0.5
-
-@router.post("/onboard")
-def onboard_agent(req: OnboardRequest, context: AuthContext = Depends(require_admin)):
-    from kryptodb.memory_api.onboarding import auto_onboard_agent
-    res = auto_onboard_agent(req.agent_id, req.sample_facts, req.trust_prior)
-    return res
 
 class ReclassifyRequest(BaseModel):
     node_id: str | None = None
     knowledge_id: str | None = None
     to_scope: str
 
-
-class LegacyMigrationRequest(BaseModel):
-    scopes: List[str]
-    lock: bool = False
-
-
-@router.get("/maintenance/migration-preflight")
-def migration_preflight(context: AuthContext = Depends(require_auth)):
-    if not isinstance(context, AuthContext) or not context.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    if not neo4j_client.driver:
-        raise HTTPException(status_code=503, detail="Neo4j not connected")
-        
-    query = """
-    MATCH (s)-[r:FACT]->(o)
-    RETURN
-        r.encryption_status AS status,
-        r.permission_scope AS scope,
-        r.knowledge_ct IS NOT NULL AS is_encrypted,
-        r.pending_envelope IS NULL AS missing_envelope,
-        r.subject_id IS NULL AS missing_subject_id,
-        r.object_id IS NULL AS missing_object_id,
-        s.name_ct IS NULL AS missing_subject_ct,
-        o.name_ct IS NULL AS missing_object_ct,
-        count(r) AS c
-    """
-    records, _, _ = neo4j_client.execute_query_with_retry(query)
-    
-    counts = {}
-    total_pending = 0
-    total_encrypted = 0
-    invalid_records = 0
-    
-    for record in records:
-        scope = record["scope"]
-        c = record["c"]
-        if record["status"] == "pending" or (not record["is_encrypted"]):
-            if scope not in counts: counts[scope] = 0
-            counts[scope] += c
-            total_pending += c
-            recoverable_legacy = (
-                not record["missing_subject_id"] and not record["missing_object_id"]
-            ) or (
-                not record["missing_subject_ct"] and not record["missing_object_ct"]
-            )
-            if record["missing_envelope"] and not recoverable_legacy:
-                invalid_records += c
-        elif record["is_encrypted"]:
-            total_encrypted += c
-
-    missing_keys = []
-    for scope in counts:
-        if scope not in encryptor.scope_keys:
-            missing_keys.append(scope)
-
-    return {
-        "status": "ok",
-        "bootstrap": bootstrap_status(),
-        "pending_counts": counts,
-        "total_pending": total_pending,
-        "total_encrypted": total_encrypted,
-        "invalid_records": invalid_records,
-        "missing_keys": missing_keys
-    }
-
-
-@router.post("/maintenance/migrate-legacy")
-def migrate_legacy_records(
-    req: LegacyMigrationRequest,
-    context: AuthContext = Depends(require_auth),
-    x_kryptodb_session: str | None = Header(default=None),
-):
-    """Convert legacy facts without exposing their plaintext to the caller."""
-    if not isinstance(context, AuthContext):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    
-    if context.is_admin:
-        session = None
-        requested = set(req.scopes)
-        # Admins can migrate any scope that has a loaded backend key
-        if not requested.issubset(set(encryptor.scope_keys.keys())):
-            raise HTTPException(status_code=403, detail="Every migration scope must have a configured server key")
-    else:
-        session = get_request_session(context, x_kryptodb_session)
-        requested = set(req.scopes)
-        if not requested.issubset(set(session.keys)):
-            raise HTTPException(status_code=403, detail="Every migration scope must be active in the session")
-
-    if not neo4j_client.driver:
-        raise HTTPException(status_code=503, detail="Neo4j not connected")
-
-    query = """
-    MATCH (s)-[r:FACT]->(o)
-    WHERE r.permission_scope IN $scopes
-      AND r.knowledge_ct IS NULL
-    RETURN r.id AS edge_id, r.permission_scope AS scope,
-           properties(r) AS edge_props,
-           properties(s) AS subject_props,
-           properties(o) AS object_props
-    """
-    records, _, _ = neo4j_client.execute_query_with_retry(query, scopes=sorted(requested))
-    migrated = 0
-    failed = 0
-    for record in records:
-        try:
-            replacement = migrate_legacy_fact(
-                encryptor=encryptor,
-                partition=record["scope"],
-                edge_id=record["edge_id"],
-                edge_props=dict(record["edge_props"]),
-                subject_props=dict(record["subject_props"]),
-                object_props=dict(record["object_props"]),
-                session_keyring=session,
-            )
-            replacement.pop("legacy_fields_to_remove", None)
-            update_query = """
-            MATCH ()-[r:FACT {id: $edge_id}]->()
-            SET r += $replacement
-            REMOVE r.predicate, r.source_agent_id, r.pending_envelope, r.encryption_status
-            """
-            neo4j_client.execute_query_with_retry(
-                update_query,
-                edge_id=record["edge_id"],
-                replacement=replacement,
-            )
-            migrated += 1
-        except Exception:
-            failed += 1
-
-    remaining = len(records) - migrated
-    bootstrap_locked = False
-    if req.lock:
-        if failed or remaining:
-            raise HTTPException(status_code=409, detail="Cannot lock bootstrap mode while migration has failures or pending records")
-        lock_bootstrap()
-        bootstrap_locked = True
-
-    return {
-        "status": "ok" if failed == 0 else "partial",
-        "scopes": sorted(requested),
-        "examined": len(records),
-        "migrated": migrated,
-        "failed": failed,
-        "remaining": remaining,
-        "bootstrap_locked": bootstrap_locked,
-    }
 
 @router.post("/reclassify")
 def reclassify_node(req: ReclassifyRequest, context: AuthContext = Depends(require_auth), x_kryptodb_session: str | None = Header(default=None)):
@@ -1183,83 +918,14 @@ def reclassify_node(req: ReclassifyRequest, context: AuthContext = Depends(requi
     
     return {"status": "ok", "message": f"Node {req.node_id} reclassified from {old_scope} to {req.to_scope}"}
 
-from fastapi import WebSocket, WebSocketDisconnect
-from kryptodb.daemon.events import event_bus, GraphEvent
-import asyncio
-
-@router.websocket("/ws/graph-events")
-async def websocket_graph_events(websocket: WebSocket, agent_id: str, api_key: str | None = None):
-    # Key resolution priority:
-    # 1. Authorization header (native/server clients)
-    # 2. api_key query param (browser clients — subprotocols reject arbitrary chars)
-    # 3. kryptodb-bearer.<key> subprotocol (legacy; kept for compatibility)
-    bearer = parse_bearer(websocket.headers.get("authorization"))
-    requested_protocols = [p.strip() for p in websocket.headers.get("sec-websocket-protocol", "").split(",")]
-    protocol_key = next((p[len("kryptodb-bearer."):] for p in requested_protocols if p.startswith("kryptodb-bearer.")), None)
-    resolved_key = bearer or api_key or protocol_key
-    context = api_keys.authenticate(resolved_key)
-    if context is None:
-        await websocket.close(code=1008, reason="Valid bearer API key required")
-        return
-    if not context.is_admin and context.agent_id != agent_id:
-        await websocket.close(code=1008, reason="Agent identity is bound to the API key")
-        return
-    # Only echo back the subprotocol when one was actually requested
-    await websocket.accept(subprotocol=f"kryptodb-bearer.{protocol_key}" if protocol_key else None)
-
-    from kryptodb.memory_api.agents import get_agent
-    
-    
-    agent = get_agent(context.agent_id) if not context.is_admin else None
-    if not agent and agent_id != "admin":
-        await websocket.close(code=1008, reason="Unknown agent")
-        return
-        
-    client_id = str(uuid.uuid4())
-    queue = await event_bus.connect(client_id)
-    try:
-        while True:
-            event: GraphEvent = await queue.get()
-            if agent:
-                allowed_scopes = set(agent.get("allowed_scopes", [])) & api_keys.effective_scopes(context)
-            else:
-                # "admin" has all scopes implicitly
-                allowed_scopes = {event.permission_scope}
-
-            session = None if context.is_admin else sessions.get(websocket.headers.get("x-kryptodb-session"))
-            active_partitions = set(session.keys) if session else set()
-            # The admin graph viewer is already authorized for every scope and
-            # does not have an agent session/partition keyring to activate.
-            # Keep the event payload intact so the UI can animate traversals.
-            if context.is_admin:
-                await websocket.send_json(event.model_dump(mode='json'))
-                continue
-            cleared_scopes = allowed_scopes & active_partitions
-            
-            if event.permission_scope in cleared_scopes:
-                # Fully cleared, send the real event
-                await websocket.send_json(event.model_dump(mode='json'))
-            elif event.permission_scope in allowed_scopes:
-                # Allowed but locked -> send opaque access_denied
-                opaque_event = GraphEvent(
-                    event_type="access_denied",
-                    permission_scope=event.permission_scope,
-                    timestamp=event.timestamp
-                )
-                await websocket.send_json(opaque_event.model_dump(mode='json'))
-            else:
-                # Not authorized at all -> silently drop
-                pass
-    except WebSocketDisconnect:
-        event_bus.disconnect(client_id)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        event_bus.disconnect(client_id)
+# Note: /ws/graph-events WebSocket stream was retired in Phase 4 in favor of REST polling (/graph/snapshot)
 
 # --- App Definition ---
 app = FastAPI(title="KryptoDB Daemon", version="0.1.0", lifespan=lifespan)
 
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1267,6 +933,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def trace_id_middleware(request: Request, call_next):
+    trace_id = request.headers.get("X-Trace-ID") or request.headers.get("X-Request-ID") or f"trace-{uuid.uuid4().hex[:12]}"
+    request.state.trace_id = trace_id
+    response = await call_next(request)
+    response.headers["X-Trace-ID"] = trace_id
+    return response
 
 @app.get("/health")
 def health_endpoint():
@@ -1389,19 +1063,6 @@ def configure_scope_key(req: ConfigureScopeKeyRequest, context: AuthContext = De
 class UpdateAgentRequest(BaseModel):
     agent_id: str
     scopes: List[str]
-@router.get("/admin/scopes")
-def list_all_scopes(context: AuthContext = Depends(require_admin)):
-    if not neo4j_client.driver:
-        raise HTTPException(status_code=503, detail="Neo4j not connected")
-        
-    query = """
-    MATCH (n) WHERE n.permission_scope IS NOT NULL RETURN DISTINCT n.permission_scope AS scope
-    UNION
-    MATCH ()-[r]-() WHERE r.permission_scope IS NOT NULL RETURN DISTINCT r.permission_scope AS scope
-    """
-    records, _, _ = neo4j_client.execute_query_with_retry(query)
-    scopes = sorted(list(set(r["scope"] for r in records if r["scope"])))
-    return {"scopes": scopes}
 
 
 
@@ -1420,7 +1081,7 @@ def prepare_dataset(req: DatasetPrepareRequest, context: AuthContext = Depends(r
     if req.mode not in {"new", "existing"}:
         raise HTTPException(status_code=400, detail="mode must be new or existing")
     configured = scope in encryptor.scope_keys
-    if not configured and not bootstrap_enabled():
+    if not configured:
         raise HTTPException(status_code=409, detail=f"Customer scope key is not configured for: {scope}")
     record = {
         "dataset_id": dataset_id,
@@ -1484,7 +1145,7 @@ def create_api_key(req: CreateApiKeyRequest, context: AuthContext = Depends(requ
     # In development, warn but allow unconfigured scopes.
     missing_keys = [s for s in sorted(requested) if s not in encryptor.scope_keys]
     if missing_keys:
-        if encryptor.customer_keys_required and not bootstrap_enabled():
+        if encryptor.customer_keys_required:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -1515,6 +1176,31 @@ def revoke_api_key(key_id: str, context: AuthContext = Depends(require_admin)):
     if not changed:
         raise HTTPException(status_code=404, detail="API key not found")
     return {"status": "revoked", "key_id": key_id}
+
+
+@app.post("/admin/sessions/{session_id}/revoke")
+def revoke_session(session_id: str, context: AuthContext = Depends(require_admin)):
+    session = sessions.get(session_id)
+    if not session:
+        if session_id in sessions._sessions:
+            sessions.revoke(session_id)
+            return {"status": "revoked", "session_id": session_id}
+        raise HTTPException(status_code=404, detail="Session not found or already revoked")
+
+    scopes_to_clean = set(session.scopes)
+    sessions.revoke(session_id)
+
+    # Prune from keyring if no other active sessions need these scopes
+    active_scopes_remaining = set()
+    for s in sessions._sessions.values():
+        if not s.is_expired():
+            active_scopes_remaining.update(s.scopes)
+
+    for scope in scopes_to_clean:
+        if scope not in active_scopes_remaining:
+            keyring.remove_key(scope)
+
+    return {"status": "revoked", "session_id": session_id}
 
 
 @app.get("/admin/api-keys")

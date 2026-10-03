@@ -6,7 +6,7 @@ from uuid import uuid4
 
 class GraphEvent(BaseModel):
     event_type: Literal["node_created", "edge_created", "edge_closed", 
-                        "traversal_complete", "cascade_step", "access_denied"]
+                        "traversal_complete", "cascade_step", "access_denied", "fact_forgotten"]
     permission_scope: str
     timestamp: datetime
     
@@ -37,20 +37,23 @@ class EventBus:
         if client_id in self.clients:
             del self.clients[client_id]
 
-    async def publish(self, event: GraphEvent):
-        """
-        Fans out the raw event to all connected clients.
-        Gate-filtering happens at the WebSocket consumption layer.
-        """
+    def record_audit(self, event: GraphEvent):
         self.audit_log.insert(0, [
             event.timestamp.strftime("%H:%M:%S.%f")[:-3],
-            "system", 
+            event.source_id or "system", 
             event.event_type,
             event.permission_scope,
             "allowed"
         ])
         if len(self.audit_log) > 100:
             self.audit_log.pop()
+
+    async def publish(self, event: GraphEvent):
+        """
+        Fans out the raw event to all connected clients.
+        Gate-filtering happens at the WebSocket consumption layer.
+        """
+        self.record_audit(event)
 
         # Publish to all clients
         for queue in self.clients.values():

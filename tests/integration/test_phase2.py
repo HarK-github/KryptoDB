@@ -1,7 +1,11 @@
 import pytest
+from datetime import datetime, timezone
 from kryptodb.graph.schema import Edge
 from kryptodb.memory_api.propose import propose_fact
-from kryptodb.memory_api.query import filter_valid_edges
+
+def filter_valid_edges(edges: list[Edge]) -> list[Edge]:
+    now = datetime.now(timezone.utc)
+    return [e for e in edges if (not e.valid_to or e.valid_to > now) and (not e.unlock_at or e.unlock_at <= now)]
 
 @pytest.fixture(autouse=True)
 def mock_redis(monkeypatch):

@@ -34,3 +34,9 @@ class Edge(KryptoDBBase):
     object_tags: List[str] = Field(default_factory=list)
     is_suspicious: bool = False
     dataset_id: Optional[str] = None
+
+
+def is_sensitive_scope(scope: Optional[str]) -> bool:
+    """Checks if a scope tier requires human-in-the-loop approval before mutating."""
+    return bool(scope and scope.upper().startswith(("CONFIDENTIAL:", "RESTRICTED:", "TOP_SECRET:")))
+

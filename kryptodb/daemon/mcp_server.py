@@ -1,3 +1,8 @@
+"""
+KryptoDB FastMCP Server.
+Designated primary read/write ingress interface for AI agents interacting
+with the encrypted knowledge-graph memory substrate.
+"""
 from fastmcp import FastMCP
 import httpx
 import os
@@ -37,23 +42,104 @@ def request_headers() -> dict[str, str]:
     return headers
 
 @mcp.tool()
-def propose_fact_tool(subject: str, predicate: str, obj: str, scope: str, description: str = None, dataset_id: str = None) -> str:
-    """Store a factual relationship in the encrypted memory substrate."""
+def remember(subject: str, predicate: str, obj: str, scope: str, description: str = None, dataset_id: str = None, session_id: str = None, trace_id: str = None) -> str:
+    """Core Verb: remember(fact, scope, session_id?)
+    Store a factual relationship in the encrypted memory substrate.
+    """
     agent_id = get_agent_id()
     try:
         import uuid
-        edge_data = {
+        trace_id = trace_id or f"trace-{uuid.uuid4().hex[:12]}"
+        logger.info(json.dumps({"event": "mcp_tool_invocation", "tool": "remember", "trace_id": trace_id, "agent_id": agent_id, "scope": scope}))
+        headers = request_headers()
+        headers["X-Trace-ID"] = trace_id
+        if session_id:
+            headers["X-KryptoDB-Session"] = session_id
+        fact_payload = {
             "id": str(uuid.uuid4()),
-            "type": "FACT",
+            "subject": subject,
             "predicate": predicate,
+            "object": obj,
             "description": description,
-            "permission_scope": scope,
-            "source_agent_id": agent_id,
-            "subject_id": subject,
-            "object_id": obj,
             "dataset_id": dataset_id,
         }
-        response = httpx.post(f"{DAEMON_URL}/memory", headers=request_headers(), json={"agent_id": agent_id, "edge": edge_data})
+        response = httpx.post(
+            f"{DAEMON_URL}/memory/remember",
+            headers=headers,
+            json={"agent_id": agent_id, "fact": fact_payload, "scope": scope, "session_id": session_id}
+        )
+        return json.dumps(response.json(), indent=2)
+    except Exception as e:
+        return f"error: {str(e)}"
+
+@mcp.tool()
+def propose_fact_tool(subject: str, predicate: str, obj: str, scope: str, description: str = None, dataset_id: str = None, trace_id: str = None) -> str:
+    """Legacy alias for remember(). Stores a factual relationship in the encrypted memory substrate."""
+    return remember(subject=subject, predicate=predicate, obj=obj, scope=scope, description=description, dataset_id=dataset_id, trace_id=trace_id)
+
+@mcp.tool()
+def recall(query: str = None, subject_id: str = None, requested_scope: str = None, session_id: str = None, mode: str = "local", trace_id: str = None) -> str:
+    """Core Verb: recall(query, scope, session_id?)
+    Retrieve facts from memory using 4-gate verification (Permission -> Activation -> Blind-Index -> Decrypt).
+    On denied_permission or denied_inactive, informs the caller access is denied.
+    """
+    agent_id = get_agent_id()
+    import uuid
+    trace_id = trace_id or f"trace-{uuid.uuid4().hex[:12]}"
+    logger.info(json.dumps({"event": "mcp_tool_invocation", "tool": "recall", "trace_id": trace_id, "agent_id": agent_id, "scope": requested_scope}))
+    headers = request_headers()
+    headers["X-Trace-ID"] = trace_id
+    if session_id:
+        headers["X-KryptoDB-Session"] = session_id
+    try:
+        response = httpx.post(
+            f"{DAEMON_URL}/memory/recall",
+            headers=headers,
+            json={
+                "scope": requested_scope,
+                "subject_id": subject_id,
+                "query": query,
+                "session_id": session_id,
+            },
+        )
+        if response.status_code == 403:
+            return json.dumps({"status": "denied_permission", "facts": [], "trace_id": trace_id})
+        payload = response.json()
+        return json.dumps(payload, indent=2)
+    except Exception as e:
+        logger.exception("Memory recall failed: daemon=%s agent=%s", DAEMON_URL, agent_id)
+        return f"error: {str(e)}"
+
+@mcp.tool()
+def query_memory_tool(query: str = None, subject_id: str = None, requested_scope: str = None, mode: str = "local", trace_id: str = None) -> str:
+    """Legacy alias for recall(). Retrieve facts from memory."""
+    return recall(query=query, subject_id=subject_id, requested_scope=requested_scope, mode=mode, trace_id=trace_id)
+
+@mcp.tool()
+def forget(scope: str, fact_id: str = None, subject: str = None, predicate: str = None, approved: bool = False, trace_id: str = None) -> str:
+    """Core Verb: forget(fact_id | subject+predicate, scope)
+    Explicitly retract a fact from memory:
+    - Purges blind-index entries and ciphertext on matching edges so terms become unsearchable.
+    - Sensitive scopes require explicit HITL approval (approved=True).
+    - Records an audit ledger entry (actor, scope, target, timestamp - not content).
+    """
+    try:
+        import uuid
+        trace_id = trace_id or f"trace-{uuid.uuid4().hex[:12]}"
+        logger.info(json.dumps({"event": "mcp_tool_invocation", "tool": "forget", "trace_id": trace_id, "scope": scope}))
+        headers = request_headers()
+        headers["X-Trace-ID"] = trace_id
+        response = httpx.post(
+            f"{DAEMON_URL}/memory/forget",
+            headers=headers,
+            json={
+                "scope": scope,
+                "fact_id": fact_id,
+                "subject": subject,
+                "predicate": predicate,
+                "approved": approved
+            }
+        )
         return json.dumps(response.json(), indent=2)
     except Exception as e:
         return f"error: {str(e)}"
@@ -65,64 +151,6 @@ def task_status_tool(task_id: str) -> str:
         response = httpx.get(f"{DAEMON_URL}/status/{task_id}", headers=request_headers())
         return json.dumps(response.json(), indent=2)
     except Exception as e:
-        return f"error: {str(e)}"
-
-@mcp.tool()
-def run_onboard_tool(sample_facts: list[str]) -> str:
-    """Auto-detect the appropriate schema and partition for a new agent based on sample facts."""
-    agent_id = get_agent_id()
-    try:
-        response = httpx.post(f"{DAEMON_URL}/onboard", headers=request_headers(), json={
-            "agent_id": agent_id,
-            "sample_facts": sample_facts
-        })
-        return json.dumps(response.json(), indent=2)
-    except Exception as e:
-        return f"error: {str(e)}"
-
-@mcp.tool()
-def query_memory_tool(query: str = None, subject_id: str = None, requested_scope: str = None, mode: str = "local") -> str:
-    """
-    Retrieve facts from memory. Use subject_id to query facts relating to a specific entity (strongly recommended to avoid massive context dumps).
-    Use query to pass a free-text search (falling back to subject_id or global retrieval).
-    Set mode='global' to perform Louvain Community Detection to summarize clusters instead of retrieving individual edges.
-    On denied_permission or denied_inactive, you MUST tell the user you don't have access to that
-    information. Do NOT answer using your own general knowledge, even if you recognize the subject.
-    On not_found, say you don't have that in memory. Never imply a reason you were not given.
-    """
-    agent_id = get_agent_id()
-    logger.info(
-        "Memory query start: daemon=%s agent=%s query_supplied=%s subject_supplied=%s requested_scope=%s mode=%s",
-        DAEMON_URL,
-        agent_id,
-        bool(query),
-        bool(subject_id),
-        requested_scope or "<auto>",
-        mode,
-    )
-    try:
-        response = httpx.post(
-            f"{DAEMON_URL}/memory/{agent_id}/query",
-            headers=request_headers(),
-            json={
-                "mode": mode,
-                "requested_scope": requested_scope,
-                "subject_id": subject_id,
-                "query": query,
-            },
-        )
-        logger.info("Memory query response: status_code=%s", response.status_code)
-        if response.status_code == 403:
-            return json.dumps({"status": "denied_permission", "facts": []})
-        payload = response.json()
-        logger.info(
-            "Memory query result: status=%s fact_count=%s",
-            payload.get("status") if isinstance(payload, dict) else type(payload).__name__,
-            len(payload.get("facts", [])) if isinstance(payload, dict) else "n/a",
-        )
-        return json.dumps(payload, indent=2)
-    except Exception as e:
-        logger.exception("Memory query failed: daemon=%s agent=%s", DAEMON_URL, agent_id)
         return f"error: {str(e)}"
 
 @mcp.tool()
@@ -148,20 +176,6 @@ def session_activate_tool(active_partitions: list[str]) -> str:
         if response.is_success and payload.get("session_id"):
             os.environ["KRYPTODB_SESSION_ID"] = payload["session_id"]
         return json.dumps(payload, indent=2)
-    except Exception as e:
-        return f"error: {str(e)}"
-
-
-@mcp.tool()
-def migrate_legacy_tool(scopes: list[str]) -> str:
-    """Migrate authorized legacy facts into per-knowledge encryption envelopes."""
-    try:
-        response = httpx.post(
-            f"{DAEMON_URL}/maintenance/migrate-legacy",
-            headers=request_headers(),
-            json={"scopes": scopes},
-        )
-        return json.dumps(response.json(), indent=2)
     except Exception as e:
         return f"error: {str(e)}"
 

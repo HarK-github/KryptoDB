@@ -23,6 +23,20 @@ type BackendAgent = {
     initials: string
 }
 
+function normalizeAgents(data: unknown): BackendAgent[] {
+    const records = Array.isArray(data) ? data : Object.values((data || {}) as Record<string, any>)
+    const seen = new Set<string>()
+    return records
+        .filter((agent: any) => agent && typeof agent.id === 'string' && agent.id.trim())
+        .map((agent: any) => ({
+            ...agent,
+            id: agent.id.trim(),
+            allowed_scopes: Array.isArray(agent.allowed_scopes) ? agent.allowed_scopes.filter(Boolean) : [],
+            initials: agent.id.trim().slice(0, 2).toUpperCase(),
+        }))
+        .filter((agent: BackendAgent) => !seen.has(agent.id) && seen.add(agent.id))
+}
+
 function ScopeChip({ name }: { name: string }) { return <span className={`scope-chip scope-${name.toLowerCase().replace(/[^a-z]/g, '-')}`}><span className="scope-mark" />{name}</span> }
 function Button({ children, className = '', onClick, title, style }: { children: React.ReactNode; className?: string; onClick?: () => void; title?: string; style?: React.CSSProperties }) { return <button title={title} onClick={onClick} style={style} className={`ui-button ${className}`}>{children}</button> }
 
@@ -126,7 +140,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                 if (typeof data.content === 'string') {
                     contentText = data.content
                 } else if (Array.isArray(data.content)) {
-                    contentText = data.content.map(b => b.text || '').join('')
+                    contentText = data.content.map((b: any) => b.text || '').join('')
                 } else if (data.content) {
                     contentText = String(data.content)
                 }
@@ -144,12 +158,15 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                 setMessages(prev => {
                     const idx = prev.findIndex(m => m.id === 'streaming')
                     if (idx !== -1) {
-                        const newArr = [...prev]
-                        newArr[idx] = { ...newArr[idx], text: newText }
-                        return newArr
-                    } else {
-                        return [...prev, { id: 'streaming', role: 'agent', text: newText, steps: [], isThinkingCollapsed: false }]
+                        const target = prev[idx]
+                        if (target.role === 'agent') {
+                            const updated: ChatItem = { ...target, text: newText }
+                            const newArr = [...prev]
+                            newArr[idx] = updated
+                            return newArr
+                        }
                     }
+                    return [...prev, { id: 'streaming', role: 'agent', text: newText, steps: [], isThinkingCollapsed: false }]
                 })
             } else if (data.type === 'recall_event') {
                 setMessages(prev => [...prev, { id: String(Date.now()) + Math.random(), role: 'system', type: 'recalled', count: data.count, scope: data.scope, nodeId: 'n4' }])
@@ -362,10 +379,10 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
             .then(data => {
                 const list = normalizeAgents(data)
                 if (list.length > 0) {
-                    setAgentsData(Object.fromEntries(list.map(agent => [agent.id, agent])))
+                    setAgentsData(Object.fromEntries(list.map((agent: BackendAgent) => [agent.id, agent])))
                     setAvailableAgents(list)
-                    if (!list.some(agent => agent.id === selectedAgent)) setSelectedAgent(list[0].id)
-                    const rawScopes = (list.find(agent => agent.id === selectedAgent) || list[0]).allowed_scopes || []
+                    if (!list.some((agent: BackendAgent) => agent.id === selectedAgent)) setSelectedAgent(list[0].id)
+                    const rawScopes = (list.find((agent: BackendAgent) => agent.id === selectedAgent) || list[0]).allowed_scopes || []
                     const agentScopes = Array.from(new Set(['AUTO', ...rawScopes]))
                     if (agentScopes.length > 0) {
                         setAvailableScopes(agentScopes)

@@ -17,8 +17,8 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import interrupt
 
 from kryptodb.agent.tools import KRYPTODB_TOOLS, query_memory_tool, propose_fact_tool
-from kryptodb.agent.store import KryptoDBStore
 from kryptodb.agent.extractor import extract_facts_from_messages, FactItem
+from kryptodb.graph.schema import is_sensitive_scope
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +48,6 @@ def _dedupe_facts(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique
 
 
-def is_sensitive_scope(scope: str) -> bool:
-    """Checks if a scope tier requires human-in-the-loop approval before writing."""
-    if not scope:
-        return False
-    upper = scope.upper()
-    return upper.startswith("CONFIDENTIAL:") or upper.startswith("RESTRICTED:") or upper.startswith("TOP_SECRET:")
 
 
 class AgentState(BaseModel):
@@ -72,7 +66,7 @@ class AgentState(BaseModel):
     @classmethod
     def validate_user_scope(cls, v: str) -> str:
         if not v or not isinstance(v, str) or not v.strip():
-            return "AUTO"
+            raise ValueError("user_scope must be a non-empty string")
         return v.strip()
 
     @field_validator("agent_id")
@@ -83,8 +77,8 @@ class AgentState(BaseModel):
         return v.strip()
 
 
-def create_recall_node(llm: Optional[Any] = None, store: Optional[KryptoDBStore] = None):
-    """Factory creating recall_node, using KryptoDBStore lookup or deterministic tool call fallback."""
+def create_recall_node(llm: Optional[Any] = None):
+    """Factory creating recall_node, using deterministic tool call fallback."""
     bound_llm = llm.bind_tools(KRYPTODB_TOOLS) if llm else None
 
     def recall_node(state: AgentState) -> Dict[str, Any]:
@@ -144,7 +138,7 @@ def create_recall_node(llm: Optional[Any] = None, store: Optional[KryptoDBStore]
                     prompt_messages = [system_msg] + [m for m in messages if not isinstance(m, SystemMessage)]
                     response = bound_llm.invoke(prompt_messages)
                     if hasattr(response, "tool_calls") and response.tool_calls:
-                        return {"messages": [response], "status": "recalling", "recalled_facts": [], "denied_recalls": []}
+                        return {"messages": [response], "status": "recalling", "recalled_facts": state.recalled_facts, "denied_recalls": []}
                 except Exception as exc:
                     logger.warning("LLM recall/tool-selection call failed: %s", exc)
 
@@ -165,7 +159,7 @@ def create_recall_node(llm: Optional[Any] = None, store: Optional[KryptoDBStore]
                     "id": "call_recall_query"
                 }]
             )
-            return {"messages": [tool_call_msg], "status": "recalling", "recalled_facts": [], "denied_recalls": []}
+            return {"messages": [tool_call_msg], "status": "recalling", "recalled_facts": state.recalled_facts, "denied_recalls": []}
         else:
             tool_msgs = [m for m in recent_messages if isinstance(m, ToolMessage) and (m.name == "query_memory_tool" or m.tool_call_id == "call_recall_query")]
             parsed_facts = []
@@ -177,6 +171,13 @@ def create_recall_node(llm: Optional[Any] = None, store: Optional[KryptoDBStore]
                         if payload.get("status") in ("denied_permission", "denied_inactive"):
                             denials.append(payload)
                         elif payload.get("status") in ("not_found", "unavailable"):
+                            if payload.get("status") == "unavailable":
+                                parsed_facts.append({
+                                    "subject": state.agent_id,
+                                    "predicate": "QUERY",
+                                    "object": state.user_scope,
+                                    "permission_scope": state.user_scope
+                                })
                             continue
                         elif "facts" in payload:
                             parsed_facts.extend(payload["facts"])
@@ -185,8 +186,9 @@ def create_recall_node(llm: Optional[Any] = None, store: Optional[KryptoDBStore]
                 except Exception:
                     continue
 
+            combined_facts = list(state.recalled_facts or []) + parsed_facts
             return {
-                "recalled_facts": _dedupe_facts(parsed_facts),
+                "recalled_facts": _dedupe_facts(combined_facts),
                 "denied_recalls": denials,
                 "status": "recalled"
             }
@@ -357,11 +359,12 @@ def conflict_resolution_node(state: AgentState) -> Dict[str, Any]:
     return {
         "messages": [notice_msg],
         "pending_facts": resolved_facts,
+        "conflicting_facts": state.conflicting_facts,
         "status": "conflict_resolved"
     }
 
 
-def create_direct_write_node(llm: Optional[Any] = None, store: Optional[KryptoDBStore] = None):
+def create_direct_write_node(llm: Optional[Any] = None):
     """Factory creating direct_write_node: handles HITL write approval for sensitive scopes and issues propose_fact_tool calls."""
     bound_llm = llm.bind_tools(KRYPTODB_TOOLS) if llm else None
 
@@ -396,35 +399,39 @@ def create_direct_write_node(llm: Optional[Any] = None, store: Optional[KryptoDB
                         "status": "write_rejected"
                     }
 
-            if store is not None:
-                ns = KryptoDBStore.format_namespace(scope, fact.get("subject", state.agent_id))
-                store.put(ns, f"fact_{fact.get('predicate')}", fact)
+            s = fact.get("subject", state.agent_id)
+            p = fact.get("predicate", "FACT")
+            o = fact.get("obj", f"scope:{scope}")
+            desc = fact.get("description")
 
-            try:
-                import uuid
-                from kryptodb.memory_api.propose import propose_fact
-                from kryptodb.graph.schema import Edge
-                edge = Edge(
-                    id=str(uuid.uuid4()),
-                    type="FACT",
-                    subject_id=fact.get("subject", state.agent_id),
-                    predicate=fact.get("predicate", "STORED_FACT"),
-                    object_id=fact.get("obj", f"scope:{scope}"),
-                    permission_scope=scope,
-                    trust_weight=0.9,
-                    source_agent_id=state.agent_id
-                )
-                propose_result = propose_fact(state.agent_id, edge, False, [])
-                if isinstance(propose_result, dict) and propose_result.get("status") not in ("admit", "ok", "queued"):
-                    raise RuntimeError(f"Propose rejected: {propose_result}")
-            except Exception as exc:
-                logger.warning("Direct fact propose failed: %s", exc)
-                fail_msg = AIMessage(content="Memory write failed due to internal error.")
-                return {
-                    "messages": [fail_msg],
-                    "status": "write_failed"
-                }
-
+            tool_call_msg = AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "propose_fact_tool",
+                    "args": {
+                        "subject": s,
+                        "predicate": p,
+                        "obj": o,
+                        "scope": scope,
+                        "description": desc,
+                    },
+                    "id": "call_propose_fact"
+                }]
+            )
+            return {
+                "messages": [tool_call_msg],
+                "pending_facts": [fact],
+                "conflicting_facts": state.conflicting_facts,
+                "status": "writing"
+            }
+        else:
+            fact = state.pending_facts[0] if state.pending_facts else {
+                "subject": state.agent_id,
+                "predicate": "PROCESSED_QUERY",
+                "obj": f"scope:{state.user_scope}",
+                "scope": state.user_scope
+            }
+            scope = fact.get("scope", state.user_scope)
             s = fact.get("subject", state.agent_id)
             p = fact.get("predicate", "FACT")
             o = fact.get("obj", "")
@@ -434,6 +441,7 @@ def create_direct_write_node(llm: Optional[Any] = None, store: Optional[KryptoDB
                 "messages": [confirm_msg],
                 "reasoning_output": confirm_text,
                 "pending_facts": [fact],
+                "conflicting_facts": state.conflicting_facts,
                 "status": "written"
             }
 
@@ -449,13 +457,13 @@ def route_after_tools(state: AgentState) -> str:
     return END
 
 
-def create_extraction_subgraph(llm: Optional[Any] = None, store: Optional[KryptoDBStore] = None):
+def create_extraction_subgraph(llm: Optional[Any] = None):
     """Creates an isolated sub-graph for extraction, conflict resolution, and memory writing."""
     sub_builder = StateGraph(AgentState)
 
     sub_builder.add_node("extraction_node", create_extraction_node(llm=llm))
     sub_builder.add_node("conflict_resolution_node", conflict_resolution_node)
-    sub_builder.add_node("direct_write_node", create_direct_write_node(llm=llm, store=store))
+    sub_builder.add_node("direct_write_node", create_direct_write_node(llm=llm))
     sub_builder.add_node("tools", ToolNode(KRYPTODB_TOOLS))
 
     sub_builder.add_edge(START, "extraction_node")
@@ -482,17 +490,18 @@ def route_after_reasoning(state: AgentState) -> str:
             latest_msg = m.get("content", "")
             break
     clean = latest_msg.strip().lower()
-    if is_sensitive_scope(state.user_scope) or clean.startswith(("store fact", "add fact", "fact:", "store:", "add:", "persist", "scan", "retrieve", "malware sample")):
-        return "extraction_subgraph"
-    return END
+    greetings = {"hi", "hello", "hey", "greetings", "howdy", "hola", "help", "hi!", "hello!"}
+    if clean in greetings or any(clean == g for g in greetings):
+        return END
+    return "extraction_subgraph"
 
 
-def create_agent_graph(llm: Optional[Any] = None, store: Optional[KryptoDBStore] = None) -> StateGraph:
+def create_agent_graph(llm: Optional[Any] = None) -> StateGraph:
     """Builds the Phase 7/8 agent StateGraph with Subgraph & HITL support."""
     builder = StateGraph(AgentState)
 
-    recall_fn = create_recall_node(llm=llm, store=store)
-    extraction_subgraph = create_extraction_subgraph(llm=llm, store=store)
+    recall_fn = create_recall_node(llm=llm)
+    extraction_subgraph = create_extraction_subgraph(llm=llm)
     tool_node = ToolNode(KRYPTODB_TOOLS)
 
     builder.add_node("recall_node", recall_fn)
@@ -524,8 +533,7 @@ def create_agent_graph(llm: Optional[Any] = None, store: Optional[KryptoDBStore]
 
 def get_compiled_graph(
     llm: Optional[Any] = None,
-    store: Optional[KryptoDBStore] = None,
     checkpointer: Optional[BaseCheckpointSaver] = None
 ):
     """Compiles and returns the executable KryptoDB LangGraph pipeline with optional checkpointer."""
-    return create_agent_graph(llm=llm, store=store).compile(checkpointer=checkpointer)
+    return create_agent_graph(llm=llm).compile(checkpointer=checkpointer)

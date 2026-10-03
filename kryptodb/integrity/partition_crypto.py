@@ -37,6 +37,7 @@ class Encryptor:
         self.master_aes = AESGCM(self.master_key)
         self.scope_keys = self._load_customer_scope_keys()
         self.customer_keys_required = bool(self.scope_keys) or os.environ.get("KRYPTODB_ENV", "development").lower() == "production"
+        self._memory_keys: dict[str, bytes] = {}
 
     @staticmethod
     def _load_customer_scope_keys() -> dict[str, tuple[str, bytes]]:
@@ -104,6 +105,15 @@ class Encryptor:
         return "internal:development", self._get_internal_key(partition)
 
     def _get_internal_key(self, partition: str) -> bytes:
+        if redis_client.client is None:
+            if not hasattr(self, "_memory_keys"):
+                self._memory_keys = {}
+            if partition in self._memory_keys:
+                return self._memory_keys[partition]
+            new_key = AESGCM.generate_key(bit_length=256)
+            self._memory_keys[partition] = new_key
+            return new_key
+
         stored = redis_client.client.get(f"key:{partition}")
         if stored:
             if isinstance(stored, bytes):

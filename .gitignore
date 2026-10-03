@@ -1,46 +1,67 @@
+# Byte-compiled / optimized / cache files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments and credentials
 .venv/
 .env
 *.secret
+*-keys.json
 data/scope-keys.json
+
+# Build and package artifacts
 kryptodb.egg-info/
+dist/
+build/
+*.tsbuildinfo
+
+# Runtime, logs, and process IDs
 .daemon.pid
 daemon.log
-*.db
-*-keys.json
-*.pyc
-__pycache__/
+*.log
 
-# Scratch files and temporary scripts
+# Databases and storage
+*.db
+*.sqlite
+*.sqlite3
+
+# Scratch files, notes, and planning documents
 *.excalidraw
 *.excalidraw.svg
 *.tex
 Untitled*.png
 Progress.md
 TESTING.md
-check_results.json
-code.txt
 concept.md
 findings.md
 idea_improv.md
 inmp.md
-logs.txt
 theme.md
 themeismp.css
+audit_report.md
+plan.md
+architecture.md
+check_results.json
+code.txt
+logs.txt
 scratch/
 
-# Temporary python scripts
-extract_chat.py
-fix_*.py
-llm_agent.py
-load_test_graph.py
-parse_*.py
-patch_agents_view.py
-rename_script.py
-run_*.py
-seed_*.py
-test_*.py
-test.py
-update_*.py
-insp.tsx
+# Root-level temporary scripts (anchored to root to avoid masking tests/ or package files)
+/extract_chat.py
+/fix_*.py
+/llm_agent.py
+/load_test_graph.py
+/parse_*.py
+/patch_agents_view.py
+/rename_script.py
+/run_*.py
+/seed_*.py
+/test_*.py
+/test.py
+/update_*.py
+/insp.tsx

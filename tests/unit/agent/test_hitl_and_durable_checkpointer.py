@@ -9,7 +9,6 @@ from kryptodb.agent.graph import (
     get_compiled_graph,
     is_sensitive_scope,
 )
-from kryptodb.agent.store import KryptoDBStore
 
 
 def test_is_sensitive_scope_detection():
@@ -27,8 +26,7 @@ def test_hitl_write_approval_approved():
     Graph pauses on interrupt, and resumes when approved=True is passed.
     """
     checkpointer = MemorySaver()
-    store = KryptoDBStore(agent_id="hitl-agent", authorized_scopes=["TOP_SECRET:classified"])
-    graph = get_compiled_graph(store=store, checkpointer=checkpointer)
+    graph = get_compiled_graph(checkpointer=checkpointer)
 
     config = {"configurable": {"thread_id": "hitl-thread-approve-1"}}
 
@@ -59,8 +57,7 @@ def test_hitl_write_approval_rejected():
     Graph pauses on interrupt, and halts write when approved=False is passed.
     """
     checkpointer = MemorySaver()
-    store = KryptoDBStore(agent_id="hitl-agent", authorized_scopes=["CONFIDENTIAL:hr"])
-    graph = get_compiled_graph(store=store, checkpointer=checkpointer)
+    graph = get_compiled_graph(checkpointer=checkpointer)
 
     config = {"configurable": {"thread_id": "hitl-thread-reject-1"}}
 
@@ -85,8 +82,7 @@ def test_sqlite_durable_checkpointer():
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     try:
         checkpointer = SqliteSaver(conn)
-        store = KryptoDBStore(agent_id="durable-agent", authorized_scopes=["GLOBAL"])
-        graph = get_compiled_graph(store=store, checkpointer=checkpointer)
+        graph = get_compiled_graph(checkpointer=checkpointer)
 
         config = {"configurable": {"thread_id": "durable-thread-1"}}
 

@@ -7,7 +7,6 @@ from kryptodb.agent.graph import (
     create_extraction_subgraph,
     get_compiled_graph,
 )
-from kryptodb.agent.store import KryptoDBStore
 
 
 def test_extraction_subgraph_isolated():
@@ -32,8 +31,7 @@ def test_mid_conversation_scope_revocation_time_travel():
     Asserts that on scope revocation mid-thread, the pipeline gracefully routes to denied_handling.
     """
     checkpointer = MemorySaver()
-    store = KryptoDBStore(agent_id="malware-detector", authorized_scopes=["RESEARCH:malware"])
-    graph = get_compiled_graph(store=store, checkpointer=checkpointer)
+    graph = get_compiled_graph(checkpointer=checkpointer)
 
     config = {"configurable": {"thread_id": "session-101"}}
 

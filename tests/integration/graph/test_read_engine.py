@@ -76,11 +76,6 @@ def test_read_engine_two_stage_retrieval(monkeypatch):
     mock_neo4j = MockNeo4jClient()
     monkeypatch.setattr("kryptodb.graph.read_engine.neo4j_client", mock_neo4j)
     
-    class MockEmbeddingService:
-        def encode(self, text):
-            return [0.1, 0.2, 0.3]
-            
-    monkeypatch.setattr("kryptodb.graph.read_engine.embedding_service", MockEmbeddingService())
     
     engine = ReadEngine()
     keyring.clear()
