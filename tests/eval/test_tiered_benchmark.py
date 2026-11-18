@@ -13,6 +13,7 @@ from tests.eval.benchmark_graph import seed_benchmark_graph, setup_eval_keyring
 
 def is_live_stack_available() -> bool:
     try:
+        neo4j_client.connect()
         if not neo4j_client.driver:
             return False
         return neo4j_client.check_health()
@@ -62,6 +63,7 @@ def seeded_graph():
         pytest.skip("Live Neo4j stack is not available. Run docker compose up to execute live eval.")
     success = seed_benchmark_graph()
     assert success, "Failed to seed benchmark graph in live Neo4j instance."
+    neo4j_client.execute_query_with_retry("RETURN 1")
     yield
     # Cleanup after eval run
     neo4j_client.execute_query_with_retry("MATCH (n) DETACH DELETE n")

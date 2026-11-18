@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-11-18T06:46:51.266850+00:00",
+  "total_queries": 50,
+  "mean_recall_at_10": 0.8403,
+  "mean_precision_at_10": 0.486,
+  "mean_ndcg_at_10": 1.2273,
+  "mean_mrr": 0.88,
+  "p50_latency_ms": 0.44,
+  "p95_latency_ms": 0.74,
+  "category_breakdown": {
+    "exact-entity": {
+      "queries_count": 10,
+      "recall_at_10": 0.8933,
+      "precision_at_10": 0.67,
+      "ndcg_at_10": 1.4761,
+      "mrr": 1.0
+    },
+    "synonym": {
+      "queries_count": 10,
+      "recall_at_10": 0.9,
+      "precision_at_10": 0.45,
+      "ndcg_at_10": 1.2462,
+      "mrr": 0.7
+    },
+    "multi-hop": {
+      "queries_count": 10,
+      "recall_at_10": 0.75,
+      "precision_at_10": 0.83,
+      "ndcg_at_10": 1.3211,
+      "mrr": 1.0
+    },
+    "conversation-recall": {
+      "queries_count": 5,
+      "recall_at_10": 0.8833,
+      "precision_at_10": 0.62,
+      "ndcg_at_10": 1.4606,
+      "mrr": 1.0
+    },
+    "superseded-fact": {
+      "queries_count": 5,
+      "recall_at_10": 0.6333,
+      "precision_at_10": 0.34,
+      "ndcg_at_10": 0.9252,
+      "mrr": 0.6
+    },
+    "negative": {
+      "queries_count": 5,
+      "recall_at_10": 0.8,
+      "precision_at_10": 0.0,
+      "ndcg_at_10": 0.8,
+      "mrr": 0.8
+    },
+    "isolation": {
+      "queries_count": 5,
+      "recall_at_10": 1.0,
+      "precision_at_10": 0.0,
+      "ndcg_at_10": 1.0,
+      "mrr": 1.0
+    }
+  }
+}

@@ -30,7 +30,7 @@ const getScopeColor = (scope: string) => {
   return colors[index];
 };
 
-export default function LiveGraph({ selected, onSelect }: any) {
+export default function LiveGraph({ selected, onSelect, activeTraversal }: any) {
   const [agentId] = useState("admin");
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -150,6 +150,12 @@ export default function LiveGraph({ selected, onSelect }: any) {
     if (!rafRef.current) rafRef.current = requestAnimationFrame(tick);
   }, [tick]);
 
+  useEffect(() => {
+    if (activeTraversal && activeTraversal.length > 0) {
+      playTraversal(activeTraversal);
+    }
+  }, [activeTraversal, playTraversal]);
+
   const updateScopes = useCallback(() => {
     const s = new Set<string>();
     graph.forEachNode((_, attr) => {
@@ -182,25 +188,26 @@ export default function LiveGraph({ selected, onSelect }: any) {
       const isSelected = selectedRef.current?.id === node;
       if (isSelected) {
         res.color = "#ffffff";
-        res.size = (res.size || 6) * 1.2;
+        res.size = (res.size || 6) * 1.3;
       }
       return res;
     });
 
     sigma.setSetting("edgeReducer", (edge, data) => {
       const res = { ...data };
-      if (data.historical) {
-        res.color = "#334155";
+      if (data.status === "superseded" || data.status === "revoked" || data.historical) {
+        res.color = "#475569";
         res.size = 1;
       } else {
         res.color = getScopeColor(data.scope);
-        res.size = data.trust_weight ? data.trust_weight * 3 : 1;
+        res.size = data.confidence ? Math.max(1.2, data.confidence * 2.5) : 1.5;
       }
       return res;
     });
 
     sigma.on("clickNode", (e) => {
-      onSelect({ id: e.node, label: e.node, kind: graph.getNodeAttribute(e.node, "kind") });
+      const attrs = graph.getNodeAttributes(e.node);
+      onSelect({ ...attrs, id: e.node, label: attrs.name || attrs.label || e.node });
     });
     sigma.on("clickStage", () => {
       onSelect(null);
@@ -221,11 +228,16 @@ export default function LiveGraph({ selected, onSelect }: any) {
       if (res.ok) {
         const data = await res.json();
         
-        data.nodes.forEach((n: any) => upsertNode(n.id, n));
+        data.nodes.forEach((n: any) => upsertNode(n.id, {
+          ...n,
+          label: n.name || n.label || n.id,
+          kind: n.kind || n.type || "Entity"
+        }));
         data.edges.forEach((e: any) => upsertEdge(e.id, e.source, e.target, {
-          predicate: "FACT",
-          scope: e.scope,
-          historical: false
+          ...e,
+          predicate: e.predicate || "FACT",
+          scope: e.scope || "default",
+          historical: e.status === "superseded" || e.status === "revoked"
         }));
         
         updateScopes();

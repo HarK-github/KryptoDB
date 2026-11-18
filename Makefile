@@ -9,7 +9,7 @@ start:
 	@echo "Booting storage layer (Neo4j & Redis)..."
 	@docker-compose up -d
 	@echo "Starting KryptoDB Daemon in the background..."
-	@.venv/bin/uvicorn kryptodb.daemon.server:app --port 8000 & echo $$! > .daemon.pid
+	@uv run uvicorn kryptodb.daemon.app:app --port 8000 & echo $$! > .daemon.pid
 	@echo "KryptoDB is ready! You can now use the CLI or connect your MCP client."
 
 stop:

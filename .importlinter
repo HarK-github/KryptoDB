@@ -1,0 +1,19 @@
+[importlinter]
+root_package = kryptodb
+
+[importlinter:contract:layers]
+name = Layered Architecture
+type = layers
+layers =
+    kryptodb.interfaces
+    kryptodb.core
+
+[importlinter:contract:core-isolation]
+name = Core isolation contract
+type = forbidden
+source_modules =
+    kryptodb.core
+forbidden_modules =
+    kryptodb.interfaces
+    kryptodb.agent_runtime
+    kryptodb.legacy

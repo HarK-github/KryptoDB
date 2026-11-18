@@ -31,7 +31,7 @@ fi
 case "$MODE" in
     web)
         echo "Starting KryptoDB web daemon (FastAPI + static frontend)..."
-        exec uvicorn kryptodb.daemon.server:app \
+        exec uvicorn kryptodb.daemon.app:app \
             --host 0.0.0.0 \
             --port 8000 \
             --workers 1 \
@@ -39,7 +39,7 @@ case "$MODE" in
         ;;
     mcp)
         echo "Starting KryptoDB MCP server (stdio)..." >&2
-        exec python -m kryptodb.daemon.mcp_server
+        exec python -m kryptodb.interfaces.mcp.server
         ;;
     *)
         echo "Unknown mode: $MODE. Valid values: web, mcp" >&2

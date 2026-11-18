@@ -43,11 +43,11 @@ function Button({ children, className = '', onClick, title, style }: { children:
 type ChatItem =
     | { id: string; role: 'user'; text: string }
     | { id: string; role: 'agent'; text: string; steps?: string[]; isThinkingCollapsed?: boolean }
-    | { id: string; role: 'system'; type: 'recalled' | 'denied'; count?: number; scope: string; reason?: string; nodeId?: string }
+    | { id: string; role: 'system'; type: 'recalled' | 'denied' | 'committed' | 'write_rejected'; count?: number; scope: string; reason?: string; nodeId?: string; fact?: string }
 
 export default function AgentActivityModal({ onClose, onSelectNode }: { onClose: () => void; onSelectNode?: (n: any) => void }) {
     const [pendingState, setPendingState] = useState<'pending' | 'approved' | 'rejected' | null>(null)
-    const [pendingFact, setPendingFact] = useState<{ tuple: string; scope: string } | null>(null)
+    const [pendingFact, setPendingFact] = useState<{ tuple: string; scope: string; subject?: string; predicate?: string; obj?: string; description?: string; quote?: string } | null>(null)
     const [inputMsg, setInputMsg] = useState('')
     const [isSending, setIsSending] = useState(false)
     const [threadId, setThreadId] = useState<string>('')
@@ -72,8 +72,18 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
     const [availableAgents, setAvailableAgents] = useState<BackendAgent[]>([])
     const [showAgentPicker, setShowAgentPicker] = useState(false)
 
-    const [selectedModel, setSelectedModel] = useState('llama3.2')
-    const [availableModels, setAvailableModels] = useState<string[]>(['llama3.2', 'llama3.1', 'mistral', 'qwen2.5', 'gpt-4o-mini', 'deterministic-engine'])
+    const [selectedModel, setSelectedModel] = useState('gemini-2.5-flash')
+    const [availableModels, setAvailableModels] = useState<string[]>([
+        'gemini-2.5-flash',
+        'gemini-1.5-flash',
+        'gemini-2.0-flash',
+        'llama3.2',
+        'llama3.1',
+        'mistral',
+        'qwen2.5',
+        'gpt-4o-mini',
+        'deterministic-engine'
+    ])
     const [showModelPicker, setShowModelPicker] = useState(false)
     const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434')
 
@@ -176,7 +186,12 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                 setPendingState('pending')
                 const pf = data.fact || {}
                 setPendingFact({
-                    tuple: pf.fact_tuple ? `(${pf.fact_tuple.join(', ')})` : (pf.description ? pf.description : `(${pf.subject || 'Entity'}, ${pf.predicate || 'PREDICATE'}, ${pf.obj || 'Object'})`),
+                    subject: pf.subject || '',
+                    predicate: pf.predicate || '',
+                    obj: pf.obj || '',
+                    description: pf.description || `${pf.subject || ''} ${pf.predicate || ''} ${pf.obj || ''}`.trim(),
+                    quote: pf.quote || pf.quote_substring || '',
+                    tuple: pf.fact_tuple ? `(${pf.fact_tuple.join(', ')})` : `(${pf.subject || 'Entity'}, ${pf.predicate || 'PREDICATE'}, ${pf.obj || 'Object'})`,
                     scope: pf.scope || currentScopeRef.current
                 })
                 setIsSending(false)
@@ -463,10 +478,10 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
 
     const handleApprove = async () => {
         setPendingState('approved')
+        const factDesc = pendingFact ? (pendingFact.description || `${pendingFact.subject || ''} ${pendingFact.predicate || ''} ${pendingFact.obj || ''}`.trim()) : ''
         setMessages(prev => [
             ...prev,
-            { id: String(Date.now()), role: 'system', type: 'recalled', count: 1, scope: pendingFact?.scope || currentScope, nodeId: 'n1' },
-            { id: String(Date.now() + 1), role: 'agent', text: 'Fact successfully authorized and committed to encrypted memory envelope.' }
+            { id: String(Date.now()), role: 'system', type: 'committed', fact: factDesc, scope: pendingFact?.scope || currentScope, nodeId: 'n1' }
         ])
         if (threadId) {
             try {
@@ -483,10 +498,10 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
 
     const handleReject = async () => {
         setPendingState('rejected')
+        const factDesc = pendingFact ? (pendingFact.description || `${pendingFact.subject || ''} ${pendingFact.predicate || ''} ${pendingFact.obj || ''}`.trim()) : ''
         setMessages(prev => [
             ...prev,
-            { id: String(Date.now()), role: 'system', type: 'denied', scope: pendingFact?.scope || currentScope, reason: 'user_declined' },
-            { id: String(Date.now() + 1), role: 'agent', text: 'Fact write rejected by human reviewer. Memory graph remains unchanged.' }
+            { id: String(Date.now()), role: 'system', type: 'write_rejected', fact: factDesc, scope: pendingFact?.scope || currentScope, reason: 'user_declined' }
         ])
         if (threadId) {
             try {
@@ -700,7 +715,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                             >
                                 <div className="model-info">
                                     <span className="model-name">{m}</span>
-                                    <span className="model-tag">{m.startsWith('gpt') ? 'OpenAI Cloud' : m === 'deterministic-engine' ? 'KryptoDB Core Engine' : 'Ollama Model'}</span>
+                                    <span className="model-tag">{m.startsWith('gemini') ? 'Google Gemini (Free)' : m.startsWith('gpt') ? 'OpenAI Cloud' : m === 'deterministic-engine' ? 'KryptoDB Core Engine' : 'Ollama Model'}</span>
                                 </div>
                                 {selectedModel === m && <Check size={14} className="check-icon" />}
                             </button>
@@ -715,7 +730,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                     <div className="empty-chat-state">
                         <Bot size={28} className="empty-chat-icon" />
                         <p className="empty-chat-title">KryptoDB Agent Active</p>
-                        <span className="empty-chat-sub">Ask a query to perform graph memory recall or propose encrypted facts.</span>
+                        <span className="empty-chat-sub">Ask a query to perform graph memory recall or propose memory facts.</span>
                     </div>
                 )}
 
@@ -767,7 +782,13 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                                 title="Click to highlight graph node"
                             >
                                 <span className="narration-title">
-                                    ↳ {msg.type === 'recalled' ? `recalled ${msg.count || 1} fact${(msg.count || 1) > 1 ? 's' : ''}` : 'recall denied'}
+                                    ↳ {msg.type === 'recalled'
+                                        ? `recalled ${msg.count || 1} fact${(msg.count || 1) > 1 ? 's' : ''}`
+                                        : msg.type === 'committed'
+                                        ? `Fact committed: ${msg.fact || 'Memory updated'}`
+                                        : msg.type === 'write_rejected'
+                                        ? 'Write rejected by reviewer'
+                                        : 'recall denied'}
                                 </span>
                                 <div className="narration-meta">
                                     <ScopeChip name={msg.scope} />
@@ -787,13 +808,18 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                             <span className="pulsing-dot" />
                             <span>pending approval</span>
                         </div>
-                        <div className="pending-context-label">
-                            new fact from this convo:
+                        <div className="pending-fact-statement" style={{ fontWeight: 600, fontSize: '13px', margin: '6px 0 2px 0' }}>
+                            {pendingFact.description || pendingFact.tuple}
                         </div>
-                        <div className="pending-fact-tuple">
-                            {pendingFact.tuple}
+                        <div className="pending-fact-tuple" style={{ fontSize: '11px', color: '#94a3b8' }}>
+                            Tuple: {pendingFact.tuple}
                         </div>
-                        <div className="pending-scope-row">
+                        {pendingFact.quote && (
+                            <div className="pending-quote" style={{ fontSize: '11px', fontStyle: 'italic', color: '#cbd5e1', margin: '4px 0', borderLeft: '2px solid #38bdf8', paddingLeft: '6px' }}>
+                                Quote: "{pendingFact.quote}"
+                            </div>
+                        )}
+                        <div className="pending-scope-row" style={{ marginTop: '4px' }}>
                             <span>scope:</span>
                             <ScopeChip name={pendingFact.scope} />
                         </div>

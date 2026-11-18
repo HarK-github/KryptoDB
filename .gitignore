@@ -27,7 +27,7 @@ daemon.log
 
 # Databases and storage
 *.db
-*.sqlite
+*.sqlite*
 *.sqlite3
 
 # Scratch files, notes, and planning documents

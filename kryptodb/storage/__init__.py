@@ -7,7 +7,10 @@ def bootstrap_storage():
     from kryptodb.storage.redis_client import redis_client
 
     neo4j_client.connect()
-    redis_client.connect()
+    try:
+        redis_client.connect()
+    except Exception as exc:
+        print(f"Redis connect error (non-fatal): {exc}")
     print("Storage bootstrap completed successfully.")
 
 

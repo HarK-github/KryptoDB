@@ -30,9 +30,9 @@ export default function KryptoDBLanding() {
       
       <main className="hero" id="top">
         <div className="hero-copy">
-          <div className="badge"><Sparkle />Multi-Agent Memory Access Control</div>
-          <h1><span className="headline-line"><em>Memory</em> for agents.</span><span className="headline-line"><em>Boundaries</em> for trust.</span></h1>
-          <p className="lede">Cryptographically partitioned memory for AI agents, with graph traversal, access boundaries, and an auditable MCP gateway.</p>
+          <div className="badge"><Sparkle />High-Performance Multi-Agent GraphRAG</div>
+          <h1><span className="headline-line"><em>Memory</em> for agents.</span><span className="headline-line"><em>Grounded</em> in graph truth.</span></h1>
+          <p className="lede">Hybrid vector + fulltext graph retrieval with 2-hop traversal, verifiable provenance chains, and write-time contradiction detection on Neo4j.</p>
           <div className="hero-actions">
             <a className="btn btn-solid hero-btn" href="/playground">Enter the Playground <Arrow /></a>
             <a className="btn btn-ghost hero-btn" href={githubUrl} target="_blank" rel="noreferrer">View on GitHub <Arrow /></a>
@@ -42,9 +42,9 @@ export default function KryptoDBLanding() {
       </main>
       
       <footer className="stats">
-        <div className="stat"><GraphIcon />Real-time MCP Streaming</div>
-        <div className="stat"><LockIcon />100% Encrypted Envelopes</div>
-        <div className="stat"><UsersIcon />Human-in-the-Loop Async Approvals</div>
+        <div className="stat"><GraphIcon />Native Neo4j Hybrid RRF Search</div>
+        <div className="stat"><LockIcon />2-Hop Traversal with Attributed Provenance</div>
+        <div className="stat"><UsersIcon />Cardinality-Aware Conflict Engine</div>
       </footer>
     </div>
   </div>

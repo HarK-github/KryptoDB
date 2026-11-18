@@ -5,6 +5,7 @@ temporal supersession chain, and arbitrated conflict pair across 4 partitions.
 """
 from datetime import datetime, timezone
 import json
+from kryptodb.infrastructure.neo4j.client import neo4j_client
 from kryptodb.daemon import keyring
 from kryptodb.integrity.partition_crypto import Encryptor
 
@@ -96,12 +97,12 @@ CREATE (plan:CONCEPT {id:"Mitigation-Plan-DRAFT", permission_scope:"PROJECT:alph
 CREATE (hyp)-[r2:INFORMS {id:"e-l2", permission_scope:"PROJECT:alpha", trust_weight:0.85,
         source_agent_id:"threat-analyst", valid_from:datetime(), valid_to:null,
         derived_from:["e-l1"]}]->(plan)
-
+WITH plan
 MATCH (task1:TASK {id:"Contain-Fox-Kitten"})
 CREATE (plan)-[r3:EXECUTES_AS {id:"e-l3", permission_scope:"PROJECT:alpha", trust_weight:0.9,
         source_agent_id:"ops-agent", valid_from:datetime(), valid_to:null,
         derived_from:["e-l2"]}]->(task1)
-
+WITH task1
 MATCH (alice:PERSON {id:"Alice"})
 CREATE (task1)-[r4:ASSIGNED_TO {id:"e-l4", permission_scope:"ORG:acme-structure", trust_weight:1.0,
         source_agent_id:"ops-agent", valid_from:datetime(), valid_to:null,
@@ -119,7 +120,7 @@ CREATE (proj2:PROJECT {id:"Project-Alpha-Response-Interim", permission_scope:"PR
 CREATE (bob)-[w2:WORKS_ON {id:"e-w2", permission_scope:"PROJECT:alpha", trust_weight:0.8,
         source_agent_id:"personal-assistant", valid_from:date("2026-07-01"),
         valid_to:date("2026-07-20"), superseded_by:"e-w3"}]->(proj2)
-
+WITH bob
 MATCH (proj:PROJECT {id:"Project-Alpha-Response"})
 CREATE (bob)-[w3:WORKS_ON {id:"e-w3", permission_scope:"PROJECT:alpha", trust_weight:0.8,
         source_agent_id:"personal-assistant", valid_from:date("2026-07-20"), valid_to:null,
@@ -141,6 +142,7 @@ CREATE (org)-[:HOSTED_ON {id:"e-c2", permission_scope:"PROJECT:alpha", trust_wei
 
 def seed_benchmark_graph():
     """Seeds the full benchmark graph into Neo4j."""
+    neo4j_client.connect()
     if not neo4j_client.driver:
         return False
     setup_eval_keyring()

@@ -165,9 +165,10 @@ def get_session(context: AuthContext = Depends(require_auth), x_kryptodb_session
 @router.get("/memory/{agent_id}")
 def get_memory(agent_id: str, background_tasks: BackgroundTasks, query: str = None, requested_scope: str = None, subject_id: str = None, mode: str = "local", context: AuthContext = Depends(require_auth), x_kryptodb_session: str | None = Header(default=None)):
     session = get_request_session(context, x_kryptodb_session) if isinstance(context, AuthContext) else None
+    effective_scope = None if requested_scope in ("AUTO", "*", "GLOBAL", "") else requested_scope
     res = memory_service.query_facts(
         agent_id=agent_id,
-        requested_scope=requested_scope,
+        requested_scope=effective_scope,
         subject_id=subject_id,
         query=query,
         session=session,
@@ -194,11 +195,12 @@ def post_memory_query(
     x_kryptodb_session: str | None = Header(default=None),
 ):
     """Body-based MCP query path; avoids putting search terms in URLs/logs."""
+    effective_scope = None if req.requested_scope in ("AUTO", "*", "GLOBAL", "") else req.requested_scope
     return get_memory(
         agent_id=agent_id,
         background_tasks=background_tasks,
         query=req.query,
-        requested_scope=req.requested_scope,
+        requested_scope=effective_scope,
         subject_id=req.subject_id,
         mode=req.mode,
         context=context,
@@ -719,6 +721,15 @@ def get_active_llm():
     if ACTIVE_LLM_MODEL == "deterministic-engine":
         return None
 
+    if ACTIVE_LLM_MODEL.startswith("gemini"):
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            return ChatGoogleGenerativeAI(model=ACTIVE_LLM_MODEL, google_api_key=api_key)
+        except Exception as e:
+            logger.warning(f"Failed to instantiate Gemini model '{ACTIVE_LLM_MODEL}': {e}")
+            return None
+
     if ACTIVE_LLM_MODEL.startswith("gpt-"):
         try:
             from langchain_openai import ChatOpenAI
@@ -779,7 +790,18 @@ def list_available_models():
     except Exception:
         pass
 
-    defaults = ["llama3.2", "llama3.1", "mistral", "qwen2.5", "gpt-4o-mini", "deterministic-engine"]
+    defaults = [
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
+        "llama3.2",
+        "llama3.1",
+        "mistral",
+        "qwen2.5",
+        "gpt-4o-mini",
+        "deterministic-engine",
+    ]
     all_models = list(dict.fromkeys(ollama_models + defaults))
 
     return {

@@ -25,7 +25,8 @@ dependencies = [
     "langgraph-checkpoint-sqlite",
     "packaging",
     "python-dotenv",
-    "fastmcp"
+    "fastmcp",
+    "langchain-google-genai>=4.4.0",
 ]
 
 [project.optional-dependencies]

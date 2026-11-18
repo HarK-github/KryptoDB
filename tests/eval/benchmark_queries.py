@@ -57,7 +57,7 @@ BENCHMARK_TIERS: Dict[str, BenchmarkTier] = {
         example_prompt="Trace what the Fox-Kitten finding led to, all the way to who it was assigned to.",
         raw_cypher="""
         MATCH path = (:MALWARE_FAMILY {id:"Fox-Kitten"})-[:EXPLOITS]->()
-                     <-[*0..3]-(:CONCEPT)-[:ASSIGNED_TO]->(person)
+                     -[*0..3]->(:TASK)-[:ASSIGNED_TO]->(person)
         RETURN person.id AS assigned_to, length(path) AS hops
         """,
         raw_budget_ms=150.0,

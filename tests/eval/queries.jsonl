@@ -1,0 +1,50 @@
+{"query_id": "q01", "type": "exact-entity", "query": "Who is Alice?", "expected_entity_ids": ["Alice"], "expected_fact_ids": ["e1", "e3", "e4", "e5"]}
+{"query_id": "q02", "type": "exact-entity", "query": "Acme Corp employees", "expected_entity_ids": ["Acme Corp"], "expected_fact_ids": ["e1", "e2"]}
+{"query_id": "q03", "type": "exact-entity", "query": "What is Database Cluster X?", "expected_entity_ids": ["Database Cluster X"], "expected_fact_ids": ["e6", "e7", "e8", "e10", "e12"]}
+{"query_id": "q04", "type": "exact-entity", "query": "Project Alpha details", "expected_entity_ids": ["Project Alpha"], "expected_fact_ids": ["e6", "e9"]}
+{"query_id": "q05", "type": "exact-entity", "query": "Engineering Department staff", "expected_entity_ids": ["Engineering Department"], "expected_fact_ids": ["e4", "e5"]}
+{"query_id": "q06", "type": "exact-entity", "query": "Customer PII data", "expected_entity_ids": ["Customer PII"], "expected_fact_ids": ["e7"]}
+{"query_id": "q07", "type": "exact-entity", "query": "IP address 192.168.1.50", "expected_entity_ids": ["Suspicious IP 192.168.1.50"], "expected_fact_ids": ["e10", "e11"]}
+{"query_id": "q08", "type": "exact-entity", "query": "Data Exfiltration Alert logs", "expected_entity_ids": ["Data Exfiltration Alert"], "expected_fact_ids": ["e12"]}
+{"query_id": "q09", "type": "exact-entity", "query": "Who is Bob?", "expected_entity_ids": ["Bob"], "expected_fact_ids": ["e2", "e3", "e5", "e8", "e11"]}
+{"query_id": "q10", "type": "exact-entity", "query": "San Francisco residence", "expected_entity_ids": ["San Francisco"], "expected_fact_ids": ["e14"]}
+{"query_id": "q11", "type": "synonym", "query": "Who does Alice supervise?", "expected_entity_ids": ["Alice"], "expected_fact_ids": ["e3"]}
+{"query_id": "q12", "type": "synonym", "query": "Who is Bob's boss?", "expected_entity_ids": ["Bob"], "expected_fact_ids": ["e3"]}
+{"query_id": "q13", "type": "synonym", "query": "Who leads Project Alpha?", "expected_entity_ids": ["Project Alpha"], "expected_fact_ids": ["e9"]}
+{"query_id": "q14", "type": "synonym", "query": "Who has administrator rights to Database Cluster X?", "expected_entity_ids": ["Database Cluster X"], "expected_fact_ids": ["e8"]}
+{"query_id": "q15", "type": "synonym", "query": "What sensitive information is held in the database cluster?", "expected_entity_ids": ["Database Cluster X"], "expected_fact_ids": ["e7"]}
+{"query_id": "q16", "type": "synonym", "query": "Which suspicious host targeted the data store?", "expected_entity_ids": ["Database Cluster X"], "expected_fact_ids": ["e10"]}
+{"query_id": "q17", "type": "synonym", "query": "Acme organization personnel in engineering", "expected_entity_ids": ["Engineering Department"], "expected_fact_ids": ["e4", "e5"]}
+{"query_id": "q18", "type": "synonym", "query": "Where does Alice dwell?", "expected_entity_ids": ["Alice"], "expected_fact_ids": ["e14"]}
+{"query_id": "q19", "type": "synonym", "query": "Threat actor linked to Bob", "expected_entity_ids": ["Bob"], "expected_fact_ids": ["e11"]}
+{"query_id": "q20", "type": "synonym", "query": "Infra dependencies of Project Alpha", "expected_entity_ids": ["Project Alpha"], "expected_fact_ids": ["e6"]}
+{"query_id": "q21", "type": "multi-hop", "query": "Who manages the administrator of Database Cluster X?", "expected_entity_ids": ["Database Cluster X", "Bob", "Alice"], "expected_fact_ids": ["e8", "e3"]}
+{"query_id": "q22", "type": "multi-hop", "query": "What infrastructure can Alice's subordinates administer?", "expected_entity_ids": ["Alice", "Bob", "Database Cluster X"], "expected_fact_ids": ["e3", "e8"]}
+{"query_id": "q23", "type": "multi-hop", "query": "Is the owner of Project Alpha managing anyone with access to customer PII?", "expected_entity_ids": ["Project Alpha", "Alice", "Bob", "Database Cluster X"], "expected_fact_ids": ["e9", "e3", "e8", "e7"]}
+{"query_id": "q24", "type": "multi-hop", "query": "What confidential records are stored on systems Bob can access?", "expected_entity_ids": ["Bob", "Database Cluster X", "Customer PII"], "expected_fact_ids": ["e8", "e7"]}
+{"query_id": "q25", "type": "multi-hop", "query": "Can the suspect IP attack systems where customer PII resides?", "expected_entity_ids": ["Suspicious IP 192.168.1.50", "Database Cluster X", "Customer PII"], "expected_fact_ids": ["e10", "e7"]}
+{"query_id": "q26", "type": "multi-hop", "query": "Does Alice manage anyone associated with the attacker IP?", "expected_entity_ids": ["Alice", "Bob", "Suspicious IP 192.168.1.50"], "expected_fact_ids": ["e3", "e11"]}
+{"query_id": "q27", "type": "multi-hop", "query": "What alert was raised on infrastructure that Project Alpha relies on?", "expected_entity_ids": ["Project Alpha", "Database Cluster X", "Data Exfiltration Alert"], "expected_fact_ids": ["e6", "e12"]}
+{"query_id": "q28", "type": "multi-hop", "query": "Which company employs the manager of Bob?", "expected_entity_ids": ["Bob", "Alice", "Acme Corp"], "expected_fact_ids": ["e3", "e1"]}
+{"query_id": "q29", "type": "multi-hop", "query": "What department is the administrator of Database Cluster X assigned to?", "expected_entity_ids": ["Database Cluster X", "Bob", "Engineering Department"], "expected_fact_ids": ["e8", "e5"]}
+{"query_id": "q30", "type": "multi-hop", "query": "Does Project Alpha connect to systems containing customer PII?", "expected_entity_ids": ["Project Alpha", "Database Cluster X", "Customer PII"], "expected_fact_ids": ["e6", "e7"]}
+{"query_id": "q31", "type": "conversation-recall", "query": "What did we discuss about Project Alpha architecture?", "expected_entity_ids": ["Project Alpha"], "expected_fact_ids": ["e6", "e9"]}
+{"query_id": "q32", "type": "conversation-recall", "query": "What did we record regarding threat intel on Database Cluster X?", "expected_entity_ids": ["Database Cluster X"], "expected_fact_ids": ["e10", "e12"]}
+{"query_id": "q33", "type": "conversation-recall", "query": "Review discussion on Alice's organizational roles", "expected_entity_ids": ["Alice"], "expected_fact_ids": ["e1", "e3", "e4"]}
+{"query_id": "q34", "type": "conversation-recall", "query": "Recall conversation about Bob's access permissions", "expected_entity_ids": ["Bob"], "expected_fact_ids": ["e8"]}
+{"query_id": "q35", "type": "conversation-recall", "query": "What did we discuss about suspicious network traffic?", "expected_entity_ids": ["Suspicious IP 192.168.1.50"], "expected_fact_ids": ["e10", "e11"]}
+{"query_id": "q36", "type": "superseded-fact", "query": "Where did Alice live previously?", "expected_entity_ids": ["Alice", "New York"], "expected_fact_ids": []}
+{"query_id": "q37", "type": "superseded-fact", "query": "Where does Alice currently live?", "expected_entity_ids": ["Alice", "San Francisco"], "expected_fact_ids": ["e14"]}
+{"query_id": "q38", "type": "superseded-fact", "query": "Show active address for Alice", "expected_entity_ids": ["Alice", "San Francisco"], "expected_fact_ids": ["e14"]}
+{"query_id": "q39", "type": "superseded-fact", "query": "Is Alice currently living in New York?", "expected_entity_ids": ["Alice"], "expected_fact_ids": []}
+{"query_id": "q40", "type": "superseded-fact", "query": "Verify current functional residence of Alice", "expected_entity_ids": ["Alice", "San Francisco"], "expected_fact_ids": ["e14"]}
+{"query_id": "q41", "type": "negative", "query": "Quantum reactor cooling system status", "expected_entity_ids": [], "expected_fact_ids": []}
+{"query_id": "q42", "type": "negative", "query": "Who is the CEO of Cyberdyne Systems?", "expected_entity_ids": [], "expected_fact_ids": []}
+{"query_id": "q43", "type": "negative", "query": "FTL hyperdrive engine specifications", "expected_entity_ids": [], "expected_fact_ids": []}
+{"query_id": "q44", "type": "negative", "query": "Unrelated fruit delivery schedule", "expected_entity_ids": [], "expected_fact_ids": []}
+{"query_id": "q45", "type": "negative", "query": "Mars colony atmospheric pressure", "expected_entity_ids": [], "expected_fact_ids": []}
+{"query_id": "q46", "type": "isolation", "query": "Who has admin access to Database Cluster X?", "tenant_id": "tenant-unauthorized", "expected_entity_ids": [], "expected_fact_ids": []}
+{"query_id": "q47", "type": "isolation", "query": "Alice organization data", "tenant_id": "tenant-rogue", "expected_entity_ids": [], "expected_fact_ids": []}
+{"query_id": "q48", "type": "isolation", "query": "Suspicious IP threat intelligence", "tenant_id": "tenant-external", "expected_entity_ids": [], "expected_fact_ids": []}
+{"query_id": "q49", "type": "isolation", "query": "Project Alpha dependencies", "tenant_id": "tenant-intruder", "expected_entity_ids": [], "expected_fact_ids": []}
+{"query_id": "q50", "type": "isolation", "query": "Customer PII storage details", "tenant_id": "foreign-tenant", "expected_entity_ids": [], "expected_fact_ids": []}
