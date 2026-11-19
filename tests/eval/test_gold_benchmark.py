@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from tests.eval.metrics import compute_recall_at_k, compute_precision_at_k, compute_ndcg_at_k
 from kryptodb.core.retrieval.service import RetrievalService
 from kryptodb.core.retrieval.hybrid_search import HybridSearchEngine
-from kryptodb.core.retrieval.multihop import MultiHopTraverser
+from kryptodb.core.retrieval.traversal import MultiHopTraverser
 from kryptodb.core.retrieval.ranking import PathReranker
 
 class InMemoryGraphStore:

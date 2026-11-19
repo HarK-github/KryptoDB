@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from kryptodb.core.observability import tracer
 from kryptodb.core.retrieval.hybrid_search import HybridSearchEngine, hybrid_search_engine
-from kryptodb.core.retrieval.multihop import MultiHopTraverser, multihop_traverser
+from kryptodb.core.retrieval.traversal import MultiHopTraverser, multihop_traverser
 from kryptodb.core.retrieval.ranking import AttributedMemoryResult, PathReranker, path_reranker
 from kryptodb.storage.neo4j_client import neo4j_client
 
@@ -44,30 +44,12 @@ class RetrievalService:
         relevance_cutoff: Optional[float] = None,
         now: Optional[datetime] = None,
     ) -> List[AttributedMemoryResult]:
-        """Executes end-to-end GraphRAG retrieval governed by RETRIEVAL_MODE flag."""
-        mode = os.getenv("RETRIEVAL_MODE", "new").lower()
-
         with tracer.start_as_current_span("retrieval.search") as span:
             span.set_attribute("query", query)
             span.set_attribute("tenant_id", tenant_id)
-            span.set_attribute("mode", mode)
-
-            if mode == "legacy":
-                logger.info("Executing legacy retrieval mode.")
-                return self._search_graphrag(query, tenant_id, active_scopes, top_k, max_hops, relevance_cutoff, now)
-
-            # Default: new mode
-            new_results = self._search_graphrag(query, tenant_id, active_scopes, top_k, max_hops, relevance_cutoff, now)
-
-            if mode == "shadow":
-                # In shadow mode, compare and log differences
-                span.set_attribute("shadow_results_count", len(new_results))
-                logger.info(
-                    "Shadow mode comparison: query='%s', results_count=%d",
-                    query, len(new_results)
-                )
-
-            return new_results
+            return self._search_graphrag(
+                query, tenant_id, active_scopes, top_k, max_hops, relevance_cutoff, now
+            )
 
     def _search_graphrag(
         self,

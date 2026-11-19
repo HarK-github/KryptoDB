@@ -4,9 +4,9 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock
 
-from kryptodb.core.retrieval.filter_builder import FilterBuilder
+from kryptodb.core.filters import FilterBuilder
 from kryptodb.core.retrieval.hybrid_search import reciprocal_rank_fusion, HybridSearchEngine
-from kryptodb.core.retrieval.multihop import MultiHopTraverser
+from kryptodb.core.retrieval.traversal import MultiHopTraverser
 from kryptodb.core.retrieval.ranking import PathReranker, AttributedMemoryResult
 from kryptodb.core.retrieval.service import RetrievalService
 
