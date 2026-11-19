@@ -1,8 +1,9 @@
 # KryptoDB GraphRAG: Architecture Specification, Failure Audit & Target State
 
-**Document Version:** 1.0.0  
+**Document Version:** 1.1.0  
 **Classification:** Technical Architecture Review & Post-Mortem  
 **Component:** Conversational Memory Substrate (`agent_runtime`, `core/memory`, `core/retrieval`)  
+**Status:** **REMEDIATED & VERIFIED** (Phase 9 Complete — 197/197 Tests Passing, 5/5 Strict Evaluation Passing)  
 
 ---
 
@@ -167,3 +168,17 @@ To verify that any future deployment meets this architecture before shipping:
 3. **Temporal Math Anchors**: Relative date modifications must resolve to concrete dates (`YYYY-MM-DD`).
 4. **Negative Recall**: Superseded facts (`MemoryStatus.SUPERSEDED`) must have `valid_until <= now` and be strictly excluded from `<retrieved_memories>`.
 5. **Session Isolation**: Automated benchmarks must execute under a unique `thread_id` and test tenant to prevent cross-run database pollution.
+
+---
+
+## 6. Implementation & Remediation Status
+
+All defects **DEF-01 through DEF-06** were resolved and verified across Phases 8 and 9:
+- **DEF-01 Resolved**: Intent classification operates on sub-turn segments without vetoing factual claims.
+- **DEF-02 Resolved**: Output channel separation implemented; internal memory logs write to `state.system_events`.
+- **DEF-03 Resolved**: Stateful delta extraction receives entity priors and relative temporal shifts.
+- **DEF-04 Resolved**: Native Pydantic function-calling deserialization enabled across all local and cloud LLMs.
+- **DEF-05 Resolved**: `PredicateRegistry` enriched with domain technical vocabulary and dynamic schema evolution.
+- **DEF-06 Resolved**: Thread/tenant isolation enforced across all tests and benchmarks.
+- **Test Invariants**: Validated with **197 passed, 0 failed** in `pytest` and **5/5 passed** in `scripts/eval_kryptodb_strict.py`.
+

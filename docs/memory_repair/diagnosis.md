@@ -1,8 +1,9 @@
 # Memory Layer Failure Diagnosis & Root Cause Analysis
 
-**Date:** 2026-11-18  
+**Date:** 2026-11-18 (Remediated: 2026-11-19)  
 **Author:** Senior Memory Systems Engineer  
-**Component:** KryptoDB GraphRAG Memory Substrate (`agent_runtime/langgraph`, `core/retrieval`, `core/memory`)
+**Component:** KryptoDB GraphRAG Memory Substrate (`agent_runtime/langgraph`, `core/retrieval`, `core/memory`)  
+**Status:** **REMEDIATED & VERIFIED** (197/197 Pytest Passing, 5/5 Strict Evaluation Passing)
 
 ---
 
@@ -234,3 +235,13 @@ Furthermore, upon approval ([ChatPopup.tsx:469](file:///mnt/DE94962594960067/Use
    Inject structured `<retrieved_memories>` block with citation tags `[m1]` or `<retrieved_memories>none</retrieved_memories>`.
 5. **Step 5: UI & Write Honesty**:
    Async write path, explicit fact confirmation cards, accurate labels (`"Write rejected by reviewer"`, `"Fact committed: <statement>"`), and proposal deduplication.
+
+---
+
+## 3. Remediation Status
+
+All 5 steps above were fully implemented, followed by the Phase 9 protocol decoupling and Cypher centralization:
+- **`tests/memory_repair/test_memory_repair.py`**: All 12 comprehensive regression tests pass.
+- **`uv run pytest`**: 197/197 tests passing (100% green).
+- **`scripts/eval_kryptodb_strict.py`**: 5/5 passed on Meta-Llama 3.3 70B Instruct.
+

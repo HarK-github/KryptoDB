@@ -19,6 +19,7 @@ This document serves as the authoritative, living registry of shortcomings, arch
 11. [LLM Model Selection & Thinking-Token Latency](#11-llm-model-selection--thinking-token-latency)
 12. [Cypher Traversal Lineage & Benchmark Invariants](#12-cypher-traversal-lineage--benchmark-invariants)
 13. [FastMCP and REST Protocol Parity](#13-fastmcp-and-rest-protocol-parity)
+14. [Hardcoded Benchmark Shortcuts & Protocol Layering Drift](#14-hardcoded-benchmark-shortcuts--protocol-layering-drift)
 
 ---
 
@@ -260,3 +261,21 @@ Independent validation logic in legacy route handlers bypassed the centralized `
 - Stripped all domain logic out of `kryptodb/interfaces/http` and `kryptodb/interfaces/mcp`.
 - Both interfaces act as thin protocol adapters delegating to `MemoryService` and `RetrievalService`.
 - Verified contract parity via `tests/unit/interfaces/test_contract_parity.py`.
+
+---
+
+## 14. Hardcoded Benchmark Shortcuts & Protocol Layering Drift
+
+### Shortcoming
+During rapid iteration to pass specific benchmark evaluation cases, hardcoded entity names (`Dr. Chen`, `Project Titan`, `Project Phoenix`), user names (`Harshit Kandpal`), and regex-based bypass branches crept into `delta_extractor.py`, `turn_analysis.py`, and `entity_resolution.py`. Additionally, domain services began leaking raw Cypher strings, executing unindexed `toLower() CONTAINS` full-graph scans, and inspecting storage types via `hasattr(store, "entities")` and `hasattr(self.store, "facts")`.
+
+### Root Cause
+1. **Benchmark Overfitting**: Instead of relying on general few-shot/zero-shot prompts with canonical extraction rules, prompts were seeded with verbatim test entities, causing smaller local models to hallucinate or pollute Neo4j with phantom projects.
+2. **Protocol Drift**: The `MemoryStore` protocol in `ports.py` lacked formal signatures for entity searching, entity creation, and user-level data revocation. Callers in `core/memory/` compensated by inspecting concrete instance properties or issuing raw Cypher strings directly against the driver.
+
+### Lesson & Fix
+- Executed a strict two-phase architectural remediation:
+  1. **Phase 1 (CRIT-1..4, CLEAN-1..7)**: Stripped all verbatim test entities, hardcoded names, and regex shortcuts from prompts and parsers. Replaced with generic placeholders (`Jane Smith`, `EntityA`). Consolidated redundant modules (`conflict_engine.py` into `conflicts.py`, dead `hybrid.py` into `hybrid_search.py`, duplicate RRF into `rrf.py`).
+  2. **Phase 2 (CRIT-5..6, MED-1..4)**: Unified the `MemoryStore` interface by formally specifying `search_entities()`, `add_entity()`, and `revoke_by_user()`. Centralized all Cypher query strings in `infrastructure/neo4j/queries.py` and eliminated unindexed full-graph scans.
+  3. **Verification**: Refactored tests to use `StubExtractionLLM` and idempotent database cleanups, achieving **197 passed, 0 failures** in pytest and **5/5 passed** in strict end-to-end evaluation with `meta-llama/llama-3.3-70b-instruct`.
+

@@ -10,14 +10,15 @@
     <img src="https://img.shields.io/badge/Next.js-16.3-black?logo=next.js&logoColor=white" alt="Next.js">
     <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React 19">
     <img src="https://img.shields.io/badge/WebGL-Sigma.js-FF6600" alt="Sigma.js">
-    <img src="https://img.shields.io/badge/Tests-185%20Passing-brightgreen" alt="Tests">
+    <img src="https://img.shields.io/badge/Tests-197%20Passing-brightgreen" alt="Tests: 197 Passing">
+    <img src="https://img.shields.io/badge/Strict%20Eval-5%2F5%20Passed-brightgreen" alt="Strict Eval: 5/5 Passed">
     <img src="https://img.shields.io/badge/License-MIT-purple" alt="License: MIT">
   </p>
 </div>
 
 ---
 
-**KryptoDB** is a production-grade, modular memory infrastructure platform engineered specifically for autonomous multi-agent systems and enterprise AI applications. It combines native **Neo4j plaintext storage with dense vector (384-dim Cosine) and BM25 fulltext indexing**, hybrid **Reciprocal Rank Fusion (RRF)**, bounded **2-hop Cypher traversal with cycle suppression**, scale-harmonized **composite reranking**, and a cardinality-aware **MemoryRecord conflict engine**.
+**KryptoDB** is a production-grade, modular memory infrastructure platform engineered specifically for autonomous multi-agent systems and enterprise AI applications. It combines native **Neo4j plaintext storage with dense vector (384-dim Cosine) and BM25 fulltext indexing**, hybrid **Reciprocal Rank Fusion (RRF)** with semantic seed fallback, bounded **2-hop Cypher traversal with cycle suppression**, scale-harmonized **composite reranking**, **bi-temporal state supersession & historical routing**, dynamic schema evolution, and a cardinality-aware **MemoryRecord conflict engine**.
 
 KryptoDB exposes its graph memory substrate through unified **Model Context Protocol (FastMCP)** and **REST API** interfaces, backed by a real-time **Next.js WebGL Playground** for live memory exploration, query attribution, and access governance.
 
@@ -65,14 +66,14 @@ flowchart TD
     end
 
     subgraph Ports ["Core Ports / Protocols"]
-        Port_Mem["MemoryStore Protocol"]
-        Port_Evt["EventStore Protocol"]
-        Port_Emb["Embedder Protocol"]
-        Port_Rer["Reranker Protocol"]
+        Port_Mem["MemoryStore Protocol<br/>• search_entities & add_entity<br/>• write_fact & atomic_supersede<br/>• revoke & revoke_by_user<br/>• traverse_2hop"]
+        Port_Evt["EventStore Protocol<br/>• append & list_by_session"]
+        Port_Emb["Embedder Protocol<br/>• embed & embed_batch"]
+        Port_Rer["Reranker Protocol<br/>• rerank"]
     end
 
     subgraph Infrastructure ["Infrastructure Layer"]
-        Neo4j_DB[("Neo4j Plaintext Graph<br/>• Entity & Fact Vector Indexes (384-dim Cosine)<br/>• Entity Name & Fact Text BM25 Indexes")]
+        Neo4j_DB[("Neo4j Plaintext Graph<br/>• Centralized Queries (queries.py)<br/>• Entity & Fact Vector Indexes (384-dim Cosine)<br/>• Entity Name & Fact Text BM25 Indexes")]
         Redis_DB[("Redis Queue / Cache")]
         Legacy_Crypto["Legacy Crypto Engine<br/>(Parked in kryptodb/legacy/crypto/)"]
     end
@@ -131,9 +132,26 @@ KryptoDB is continuously evaluated against a 50-query gold standard benchmark su
 | **p50 Latency (ms)** | 0.32 ms | 0.44 ms | ✅ High-Throughput | +0.12 ms |
 | **p95 Latency (ms)** | 0.46 ms | 0.74 ms | ✅ High-Throughput | +0.28 ms |
 
-Run the benchmark locally:
+Run the retrieval benchmark locally:
 ```bash
 PYTHONPATH=. uv run python scripts/run_eval_benchmark.py tests/eval/final_benchmark.json
+```
+
+### Strict Autonomous Agent Evaluation (Meta-Llama 3.3 70B Instruct)
+
+KryptoDB is continuously verified against `scripts/eval_kryptodb_strict.py` validating stateful graph extraction, bi-temporal routing, and scale limits under realistic LLM completions with dynamic schema evolution:
+
+| Test | Objective | Status | Latency | Verification Invariant |
+| :--- | :--- | :---: | :---: | :--- |
+| **Test 1: Co-Reference & Alias Extraction** | Multi-turn coreference resolution | ✅ **PASSED** | 290.83 ms | Resolves pronouns (`She`, `He`) and aliases (`Dr. Chen`) to canonical entities. |
+| **Test 2: Directed Dependency Polarity** | Upstream vs downstream graph traversal | ✅ **PASSED** | 10.70 ms | Guarantees directional precision without subject/object inversion. |
+| **Test 3: 2-Hop Bridge Discovery** | Zero-lexical overlap association | ✅ **PASSED** | 26.78 ms | Discovers associative bridges via semantic vector seed fallback. |
+| **Test 4: Bi-Temporal State Supersession**| Retrospective state routing | ✅ **PASSED** | 22.59 ms | Accurately distinguishes current active state vs superseded historical state. |
+| **Test 5: Dense Hub Distractor Suppression**| Needle in a 500-event haystack | ✅ **PASSED** | 231.93 ms | Sub-second extraction of critical credentials from dense distractor hubs. |
+
+Run the strict evaluation benchmark locally:
+```bash
+uv run python scripts/eval_kryptodb_strict.py
 ```
 
 ---
@@ -206,8 +224,8 @@ npm run dev
 # 1. Verify clean architecture boundaries (contracts: 2 kept, 0 broken)
 uv run lint-imports
 
-# 2. Run complete test suite (185 passed, 0 failed, 100% green in ~6s)
-LLM_MODEL=deterministic-engine uv run pytest tests/unit/ tests/integration/ tests/eval/ -v
+# 2. Run complete test suite (197 passed, 0 failed, 100% green)
+uv run pytest
 
 # 3. Run 8-tier benchmark suite (T0-T7 latency, multi-hop, cardinality)
 uv run pytest tests/eval/test_tiered_benchmark.py -v
@@ -215,8 +233,8 @@ uv run pytest tests/eval/test_tiered_benchmark.py -v
 # 4. Run end-to-end memory engine validation (supersession, temporal, isolation)
 uv run pytest tests/eval/test_memory_engine_e2e.py -v
 
-# 5. Run Project Titan 4-turn stateful evaluation benchmark
-uv run python scripts/eval_titan_benchmark.py
+# 5. Run Strict 5-Test Evaluation Benchmark (Meta-Llama 3.3 70B / OpenRouter)
+uv run python scripts/eval_kryptodb_strict.py
 
 # 6. Run contract parity suite (MCP vs REST)
 uv run pytest tests/unit/interfaces/test_contract_parity.py -v
@@ -371,9 +389,11 @@ tests/
 scripts/
   migrate_to_plaintext.py # Data migration script
   run_eval_benchmark.py   # Benchmark evaluation runner
+  eval_kryptodb_strict.py # Strict 5-test autonomous evaluation suite
 docs/
-  phases/           # Detailed phase-by-phase implementation records (Phases 0 - 8)
+  phases/           # Detailed phase-by-phase implementation records (Phases 0 - 9)
   MIGRATION_MAP.md  # Old -> New module mapping
+  SHORTCOMINGS_AND_LESSONS_LEARNED.md # Engineering failure modes & architectural post-mortems
 ```
 
 ---

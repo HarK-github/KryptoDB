@@ -15,8 +15,8 @@ kryptodb/
     memory/         # models.py, memory_service.py, lifecycle.py, conflicts.py,
                     # predicates.py (registry), entity_resolution.py, write_policy.py
     episodic/       # events.py, summaries.py
-    retrieval/      # retrieval_service.py, hybrid.py (RRF), traversal.py,
-                    # ranking.py, rerankers.py, query.py, provenance.py
+    retrieval/      # service.py, hybrid_search.py, rrf.py, traversal.py,
+                    # ranking.py, memory_context.py, provenance.py
     embeddings/     # embedder.py (port + impl), versioning.py, queue.py
     ports.py        # Protocols: MemoryStore, EventStore, Embedder, Reranker
   infrastructure/
@@ -43,17 +43,17 @@ kryptodb/
 | `kryptodb/daemon/app.py` | `kryptodb/daemon/app.py` | Application factory registering middleware, health, memory, admin, and graph routes. |
 | `kryptodb/integrity/partition_crypto.py` | `kryptodb/legacy/crypto/partition_crypto.py` | **Parked.** Removed from live write/read paths. Shims preserve backward test imports. |
 | `kryptodb/graph/read_engine.py` | `kryptodb/core/retrieval/` & `kryptodb/infrastructure/neo4j/` | Plaintext retrieval with hybrid RRF and 2-hop Cypher traversal. |
-| `kryptodb/graph/write_engine.py` | `kryptodb/infrastructure/neo4j/write_engine.py` | Plaintext write engine supporting `tenant_id`, `status`, temporal bounds, and embeddings. |
+| `kryptodb/graph/write_engine.py` | `kryptodb/infrastructure/neo4j/store.py` & `queries.py` | Plaintext write engine unified in `Neo4jMemoryStore` via centralized queries. |
 | `kryptodb/memory_api/service.py` | `kryptodb/core/memory/memory_service.py` | Unified `MemoryService` with contradiction detection and state machine. |
 | `kryptodb/agent/graph.py` | `kryptodb/agent_runtime/langgraph/graph.py` | Optional LangGraph adapter. `agent/` re-exports for backward compatibility. |
 | `kryptodb/storage/neo4j_client.py` | `kryptodb/infrastructure/neo4j/client.py` | Underlying Neo4j driver with retry logic. Re-exported in `storage/neo4j_client.py`. |
 | `kryptodb/storage/redis_client.py` | `kryptodb/infrastructure/redis/client.py` | Redis connection handling. |
 | `kryptodb/core/retrieval/filter_builder.py` | `kryptodb/core/filters.py` | **Choke Point:** Builds Cypher filter fragment enforcing tenant, active scopes, status, and temporal validity. |
-| `kryptodb/core/retrieval/hybrid_search.py` | `kryptodb/core/retrieval/hybrid.py` | Hybrid RRF fusion of vector similarity and BM25 fulltext search. |
+| `kryptodb/core/retrieval/hybrid_search.py` | `kryptodb/core/retrieval/hybrid_search.py` & `rrf.py` | Hybrid RRF fusion of vector similarity and BM25 fulltext search with fallback. |
 | `kryptodb/core/retrieval/multihop.py` | `kryptodb/core/retrieval/traversal.py` | 2-hop bounded Cypher traversal with cycle suppression ($A \to B \to A$ prevention). |
 | `kryptodb/core/retrieval/ranking.py` | `kryptodb/core/retrieval/ranking.py` | Scale-harmonized composite reranking and provenance chain attribution. |
 | `kryptodb/core/memory/predicates.py` | `kryptodb/core/memory/predicates.py` | Declarative PredicateRegistry enforcing cardinality (`ONE` vs `MANY`). |
-| `kryptodb/core/memory/conflict_engine.py` | `kryptodb/core/memory/conflicts.py` | Contradiction detection engine superseding older facts on higher confidence. |
+| `kryptodb/core/memory/conflict_engine.py` | `kryptodb/core/memory/conflicts.py` | Consolidated contradiction detection engine superseding older facts on higher confidence. |
 | `kryptodb/core/memory/models.py` | `kryptodb/core/memory/models.py` | Pydantic v2 `MemoryRecord` and `MemoryStatus` state machine. |
 | `kryptodb/infrastructure/embeddings.py` | `kryptodb/core/embeddings/embedder.py` | SentenceTransformers with fallback and version tracking. |
 | `kryptodb/infrastructure/neo4j/schema.py` | `kryptodb/infrastructure/neo4j/schema.py` | Vector and fulltext index creation script. |
