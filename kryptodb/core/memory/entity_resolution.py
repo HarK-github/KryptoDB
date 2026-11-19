@@ -97,12 +97,9 @@ class EntityResolver:
             except Exception as exc:
                 logger.debug("Vector search error in entity resolver: %s", exc)
 
-        # 2b. Edit distance / Lexical similarity check against known tenant entities if available
+        # 2b. Edit distance / Lexical similarity check against known tenant entities
         # Ensures that names like "Harshi" vs "Harshit" are caught as near matches without auto-merging
-        all_entities = []
-        if hasattr(store, "entities") and isinstance(store.entities, dict):
-            # In-memory test store
-            all_entities = [e for (tenant, name), e in store.entities.items() if tenant == context.tenant_id]
+        all_entities = store.search_entities(norm_name, context, limit=50)
 
         for ent in all_entities:
             if ent.id in seen_cand_ids:

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from kryptodb.core.context import RequestContext
 from kryptodb.core.filters import FilterBuilder
 from kryptodb.infrastructure.neo4j.client import neo4j_client
+from kryptodb.infrastructure.neo4j.queries import TRAVERSAL_1HOP_QUERY, TRAVERSAL_2HOP_EXPANSION_QUERY
 
 logger = logging.getLogger("kryptodb.core.retrieval.traversal")
 
@@ -48,19 +49,7 @@ class MultiHopTraverser:
 
         # 1. 1-hop expansion
         filter_1hop, params_1hop = FilterBuilder.build(ctx, alias="e")
-        query_1hop = f"""
-        MATCH (s:Entity)-[e:FACT]-(t:Entity)
-        WHERE (s.id IN $seed_ids OR s.name IN $seed_ids OR t.id IN $seed_ids OR t.name IN $seed_ids)
-          AND {filter_1hop}
-        RETURN startNode(e).id AS s_id, startNode(e).name AS s_name,
-               endNode(e).id AS t_id, endNode(e).name AS t_name,
-               e.id AS edge_id, e.predicate AS predicate,
-               e.description AS description, e.confidence AS confidence,
-               e.trust_weight AS trust_weight, e.scope AS scope,
-               e.created_at AS created_at
-        ORDER BY e.confidence DESC, e.created_at DESC
-        LIMIT $limit_1hop
-        """
+        query_1hop = TRAVERSAL_1HOP_QUERY.replace("{filter_1hop}", filter_1hop)
 
         try:
             if hasattr(self.client, "execute_query_with_retry"):
@@ -104,26 +93,11 @@ class MultiHopTraverser:
         filter_e1, params_e1 = FilterBuilder.build(ctx, alias="e1")
         filter_e2, params_e2 = FilterBuilder.build(ctx, alias="e2")
 
-        query_2hop = f"""
-        MATCH (s:Entity)-[e1:FACT]-(mid:Entity)-[e2:FACT]-(t:Entity)
-        WHERE (s.id IN $seed_ids OR s.name IN $seed_ids)
-          AND s.id <> t.id AND s.id <> mid.id AND mid.id <> t.id
-          AND s <> t AND s <> mid AND mid <> t AND e1 <> e2
-          AND {filter_e1}
-          AND {filter_e2}
-          AND size([(mid)-[:FACT]-() | 1]) <= $max_hub_degree
-        RETURN s.id AS s_id, s.name AS s_name,
-               mid.id AS mid_id, mid.name AS mid_name,
-               t.id AS t_id, t.name AS t_name,
-               startNode(e1).name AS e1_src, endNode(e1).name AS e1_dst,
-               e1.id AS e1_id, e1.predicate AS e1_pred, e1.confidence AS e1_conf,
-               e1.scope AS e1_scope, e1.created_at AS e1_created, e1.description AS e1_desc,
-               startNode(e2).name AS e2_src, endNode(e2).name AS e2_dst,
-               e2.id AS e2_id, e2.predicate AS e2_pred, e2.confidence AS e2_conf,
-               e2.scope AS e2_scope, e2.created_at AS e2_created, e2.description AS e2_desc
-        ORDER BY (coalesce(e1.confidence, 1.0) + coalesce(e2.confidence, 1.0)) DESC
-        LIMIT $limit_2hop
-        """
+        query_2hop = TRAVERSAL_2HOP_EXPANSION_QUERY.replace(
+            "{filter_e1}", filter_e1
+        ).replace(
+            "{filter_e2}", filter_e2
+        )
 
         merged_params = {
             **params_e1,

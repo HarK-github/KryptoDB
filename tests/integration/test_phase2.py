@@ -24,6 +24,20 @@ def mock_redis(monkeypatch):
     mock_redis_wrapper = MockRedisWrapper()
     monkeypatch.setattr("kryptodb.integrity.partition_crypto.redis_client", mock_redis_wrapper)
 
+@pytest.fixture(autouse=True)
+def clean_neo4j_static_edges():
+    try:
+        from kryptodb.infrastructure.neo4j.client import neo4j_client
+        neo4j_client.execute_query_with_retry("MATCH ()-[r:FACT]->() WHERE r.id IN ['1', '2'] DELETE r")
+    except Exception:
+        pass
+    yield
+    try:
+        from kryptodb.infrastructure.neo4j.client import neo4j_client
+        neo4j_client.execute_query_with_retry("MATCH ()-[r:FACT]->() WHERE r.id IN ['1', '2'] DELETE r")
+    except Exception:
+        pass
+
 def test_contradictory_two_agent_fixture():
     # Agent 1 proposes
     e1 = Edge(id="1", type="FACT", predicate="KNOWS", permission_scope="TEST", source_agent_id="campus-bot", subject_id="A", object_id="B")

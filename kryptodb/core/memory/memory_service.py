@@ -223,43 +223,8 @@ class MemoryService:
 
     def forget_user(self, user_id: str, context: RequestContext) -> int:
         """User control (GDPR/privacy): permanently revoke all memories and events for a user."""
-        count = 0
-        cli = getattr(self.store, "client", None)
-        if cli and getattr(cli, "driver", None):
-            revoke_facts_query = """
-            MATCH ()-[r:FACT {tenant_id: $tenant_id}]->()
-            WHERE r.user_id = $user_id OR r.source_agent_id = $user_id
-            SET r.status = 'revoked', r.valid_until = $now
-            RETURN count(r) AS revoked_count
-            """
-            try:
-                if hasattr(cli, "execute_query_with_retry"):
-                    recs, _, _ = cli.execute_query_with_retry(
-                        revoke_facts_query,
-                        tenant_id=context.tenant_id,
-                        user_id=user_id,
-                        now=context.now.isoformat(),
-                    )
-                else:
-                    recs, _, _ = cli.driver.execute_query(
-                        revoke_facts_query,
-                        tenant_id=context.tenant_id,
-                        user_id=user_id,
-                        now=context.now.isoformat(),
-                    )
-                if recs:
-                    count = int(recs[0].get("revoked_count", 0))
-            except Exception as exc:
-                logger.error("Error executing forget_user: %s", exc)
+        return self.store.revoke_by_user(user_id, context)
 
-        # In-memory store fallback
-        if hasattr(self.store, "facts"):
-            for f in list(self.store.facts.values()):
-                if f.tenant_id == context.tenant_id:
-                    self.store.revoke(f.id, context)
-                    count += 1
-
-        return count
 
     def supersede_fact(self, old_fact_id: str, tenant_id: str = "default") -> None:
         """Compatibility helper for superseding facts."""

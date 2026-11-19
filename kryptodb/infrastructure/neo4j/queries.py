@@ -199,3 +199,138 @@ CREATE (ep:Episode {
 })
 RETURN ep.id AS id
 """
+
+REVOKE_BY_USER_QUERY = """
+MATCH ()-[r:FACT {tenant_id: $tenant_id}]->()
+WHERE r.user_id = $user_id OR r.source_agent_id = $user_id
+SET r.status = 'revoked', r.valid_until = $now
+RETURN count(r) AS revoked_count
+"""
+
+SEARCH_ENTITIES_PREFIX_QUERY = """
+MATCH (e:Entity {tenant_id: $tenant_id})
+WHERE $prefix = '' OR toLower(e.name) STARTS WITH toLower($prefix)
+RETURN e.id AS id, e.name AS name, e.tenant_id AS tenant_id, e.created_at AS created_at, e.embedding AS embedding
+LIMIT $limit
+"""
+
+ADD_ENTITY_QUERY = """
+MERGE (e:Entity {name: $name, tenant_id: $tenant_id})
+ON CREATE SET e.id = $id,
+              e.embedding = $embedding,
+              e.created_at = $now,
+              e.updated_at = $now
+RETURN e.id AS id, e.name AS name, e.tenant_id AS tenant_id, e.created_at AS created_at, e.embedding AS embedding
+"""
+
+RETROSPECTIVE_FACTS_QUERY = """
+MATCH (s:Entity)-[e:FACT]-(t:Entity)
+WHERE (s.id IN $seed_ids OR s.name IN $seed_ids OR s.name IN $seed_names OR
+       t.id IN $seed_ids OR t.name IN $seed_ids OR t.name IN $seed_names)
+  AND e.tenant_id = $tenant_id
+  AND e.status IN ['active', 'superseded']
+  AND ($active_scopes IS NULL OR e.scope IN $active_scopes)
+RETURN startNode(e).id AS s_id, startNode(e).name AS s_name,
+       endNode(e).id AS t_id, endNode(e).name AS t_name,
+       e.id AS edge_id, e.predicate AS predicate,
+       e.description AS description, e.confidence AS confidence,
+       e.trust_weight AS trust_weight, e.scope AS scope,
+       e.status AS status, e.valid_from AS valid_from, e.valid_until AS valid_until,
+       e.created_at AS created_at
+ORDER BY (CASE WHEN e.status = 'superseded' THEN 1 ELSE 0 END) DESC, e.created_at DESC
+LIMIT $limit
+"""
+
+TRAVERSAL_1HOP_QUERY = """
+MATCH (s:Entity)-[e:FACT]-(t:Entity)
+WHERE (s.id IN $seed_ids OR s.name IN $seed_ids OR t.id IN $seed_ids OR t.name IN $seed_ids)
+  AND {filter_1hop}
+RETURN startNode(e).id AS s_id, startNode(e).name AS s_name,
+       endNode(e).id AS t_id, endNode(e).name AS t_name,
+       e.id AS edge_id, e.predicate AS predicate,
+       e.description AS description, e.confidence AS confidence,
+       e.trust_weight AS trust_weight, e.scope AS scope,
+       e.created_at AS created_at
+ORDER BY e.confidence DESC, e.created_at DESC
+LIMIT $limit_1hop
+"""
+
+TRAVERSAL_2HOP_EXPANSION_QUERY = """
+MATCH (s:Entity)-[e1:FACT]-(mid:Entity)-[e2:FACT]-(t:Entity)
+WHERE (s.id IN $seed_ids OR s.name IN $seed_ids)
+  AND s.id <> t.id AND s.id <> mid.id AND mid.id <> t.id
+  AND s <> t AND s <> mid AND mid <> t AND e1 <> e2
+  AND {filter_e1}
+  AND {filter_e2}
+  AND size([(mid)-[:FACT]-() | 1]) <= $max_hub_degree
+RETURN s.id AS s_id, s.name AS s_name,
+       mid.id AS mid_id, mid.name AS mid_name,
+       t.id AS t_id, t.name AS t_name,
+       startNode(e1).name AS e1_src, endNode(e1).name AS e1_dst,
+       e1.id AS e1_id, e1.predicate AS e1_pred, e1.confidence AS e1_conf,
+       e1.scope AS e1_scope, e1.created_at AS e1_created, e1.description AS e1_desc,
+       startNode(e2).name AS e2_src, endNode(e2).name AS e2_dst,
+       e2.id AS e2_id, e2.predicate AS e2_pred, e2.confidence AS e2_conf,
+       e2.scope AS e2_scope, e2.created_at AS e2_created, e2.description AS e2_desc
+ORDER BY (coalesce(e1.confidence, 1.0) + coalesce(e2.confidence, 1.0)) DESC
+LIMIT $limit_2hop
+"""
+
+HYBRID_VECTOR_ENTITY_QUERY = """
+CALL db.index.vector.queryNodes('entity_embedding_idx', $top_k, $query_vec)
+YIELD node, score
+WHERE node.tenant_id = $tenant_id
+  AND ($active_scopes IS NULL OR EXISTS {
+      MATCH (node)-[r:FACT]-(:Entity)
+      WHERE r.scope IN $active_scopes
+  })
+RETURN node.id AS id, node.name AS name, score AS vector_score
+"""
+
+HYBRID_VECTOR_ENTITY_ALT_QUERY = """
+CALL db.index.vector.queryNodes('entity_vector_index', $top_k, $query_vec)
+YIELD node, score
+WHERE node.tenant_id = $tenant_id
+  AND ($active_scopes IS NULL OR EXISTS {
+      MATCH (node)-[r:FACT]-(:Entity)
+      WHERE r.scope IN $active_scopes
+  })
+RETURN node.id AS id, node.name AS name, score AS vector_score
+"""
+
+HYBRID_FULLTEXT_ENTITY_QUERY = """
+CALL db.index.fulltext.queryNodes('entity_name_ft', $lucene_query)
+YIELD node, score
+WHERE node.tenant_id = $tenant_id
+  AND ($active_scopes IS NULL OR EXISTS {
+      MATCH (node)-[r:FACT]-(:Entity)
+      WHERE r.scope IN $active_scopes
+  })
+RETURN node.id AS id, node.name AS name, score AS bm25_score
+LIMIT $top_k
+"""
+
+SEMANTIC_SEED_FALLBACK_ENTITY_QUERY = """
+MATCH (e:Entity)-[r:FACT]-(:Entity)
+WHERE e.tenant_id = $tenant_id
+  AND ($active_scopes IS NULL OR r.scope IN $active_scopes)
+  AND e.embedding IS NOT NULL
+WITH DISTINCT e, vector.similarity.cosine(e.embedding, $query_vec) AS score
+ORDER BY score DESC
+RETURN e.id AS id, e.name AS name, score
+LIMIT $top_k
+"""
+
+SEMANTIC_SEED_FALLBACK_FACT_QUERY = """
+MATCH (s:Entity)-[r:FACT]->(o:Entity)
+WHERE r.tenant_id = $tenant_id
+  AND ($active_scopes IS NULL OR r.scope IN $active_scopes)
+  AND r.embedding IS NOT NULL
+WITH s, o, vector.similarity.cosine(r.embedding, $query_vec) AS score
+ORDER BY score DESC
+UNWIND [s, o] AS node
+RETURN DISTINCT node.id AS id, node.name AS name, max(score) AS score
+ORDER BY score DESC
+LIMIT $top_k
+"""
+

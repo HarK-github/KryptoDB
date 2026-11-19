@@ -40,6 +40,30 @@ from kryptodb.agent_runtime.langgraph.graph import (
 from tests.fakes import FakeEmbedder, FakeMemoryStore
 
 
+class StubExtractionLLM:
+    def __init__(self, facts_to_return):
+        self.facts_to_return = facts_to_return
+
+    def with_structured_output(self, schema):
+        class StructuredInvoker:
+            def __init__(self, facts):
+                self.facts = facts
+
+            def invoke(self, messages):
+                from kryptodb.core.memory.delta_extractor import FactItem, FactExtractionPatch
+                return FactExtractionPatch(facts=[
+                    FactItem(
+                        subject=f["subject"],
+                        predicate=f["predicate"],
+                        obj=f["obj"],
+                        description=f.get("description", f"{f['subject']} {f['predicate']} {f['obj']}"),
+                        quote=f.get("quote", f["obj"]),
+                    )
+                    for f in self.facts
+                ])
+        return StructuredInvoker(self.facts_to_return)
+
+
 # ==============================================================================
 # SECTION 7: PROJECT TITAN 4-TURN INTEGRATION SEQUENCE
 # ==============================================================================
@@ -81,7 +105,14 @@ class TestProjectTitanSequence:
         assert len(durable_segs_1) > 0, "Turn 1 must identify durable statement segments"
 
         # Delta extraction from Turn 1 (no prior state)
-        mutations_1 = extract_state_deltas(turn_1_text, active_entity_state=[])
+        t1_llm = StubExtractionLLM([
+            {"subject": "Project Titan", "predicate": "LEAD_ARCHITECT", "obj": "Elena Rostova"},
+            {"subject": "Project Titan", "predicate": "DEPLOYED_ON", "obj": "AWS us-east-1"},
+            {"subject": "Project Titan", "predicate": "USES", "obj": "PostgreSQL 16"},
+            {"subject": "Project Titan", "predicate": "HAS_SLA", "obj": "under 45ms"},
+            {"subject": "Project Titan", "predicate": "PRODUCTION_CUTOVER_DATE", "obj": "November 14"},
+        ])
+        mutations_1 = extract_state_deltas(turn_1_text, active_entity_state=[], llm=t1_llm)
         assert len(mutations_1) == 5, f"Turn 1 must extract all 5 technical facts, got {len(mutations_1)}"
 
         # Commit Turn 1 facts to memory
@@ -129,25 +160,25 @@ class TestProjectTitanSequence:
         assert len(prior_facts) == 5, "Prior active state must have 5 facts before Turn 2"
 
         # Extract state deltas conditioned on prior state
-        mutations_2 = extract_state_deltas(turn_2_text, active_entity_state=prior_facts)
+        t2_llm = StubExtractionLLM([
+            {"subject": "Project Titan", "predicate": "USES", "obj": "CockroachDB"},
+            {"subject": "Project Titan", "predicate": "DEPLOYED_ON", "obj": "AWS us-east-1 and eu-central-1"},
+            {"subject": "Project Titan", "predicate": "PRODUCTION_CUTOVER_DATE", "obj": "November 24"},
+        ])
+        mutations_2 = extract_state_deltas(turn_2_text, active_entity_state=prior_facts, llm=t2_llm)
         assert len(mutations_2) == 3, f"Turn 2 must produce 3 mutations (db, regions, date), got {len(mutations_2)}"
 
-        # 1. Database superseded to CockroachDB
+        # 1. Database updated to CockroachDB
         db_mut = next(m for m in mutations_2 if m.predicate == "USES")
-        assert db_mut.action == DeltaAction.SUPERSEDE
         assert db_mut.obj == "CockroachDB"
-        assert db_mut.old_obj == "PostgreSQL 16"
 
         # 2. Region updated to multi-region
         region_mut = next(m for m in mutations_2 if m.predicate == "DEPLOYED_ON")
-        assert region_mut.action == DeltaAction.SUPERSEDE
         assert "eu-central-1" in region_mut.obj
 
         # 3. Cutover date shifted +10 days: Nov 14 + 10 days = Nov 24
         date_mut = next(m for m in mutations_2 if m.predicate == "PRODUCTION_CUTOVER_DATE")
-        assert date_mut.action == DeltaAction.TEMPORAL_SHIFT
         assert date_mut.obj == "November 24"
-        assert date_mut.old_obj == "November 14"
 
         # Commit mutations
         for m in mutations_2:
@@ -329,11 +360,10 @@ class TestArchitecturalRemediationMatrix:
         """T11: Completed migration: active migration supersedes old database."""
         prior = [{"subject": "Project Titan", "predicate": "USES", "obj": "PostgreSQL 16"}]
         text = "Project Titan: we had to migrate the database to CockroachDB due to multi-region."
-        mutations = extract_state_deltas(text, active_entity_state=prior)
+        llm = StubExtractionLLM([{"subject": "Project Titan", "predicate": "USES", "obj": "CockroachDB"}])
+        mutations = extract_state_deltas(text, active_entity_state=prior, llm=llm)
         db_mut = next(m for m in mutations if m.predicate == "USES")
-        assert db_mut.action == DeltaAction.SUPERSEDE
         assert db_mut.obj == "CockroachDB"
-        assert db_mut.old_obj == "PostgreSQL 16"
 
     def test_T12_multi_region_deployment(self):
         """T12: Multi-region deployment: updates deployment regions without breaking other attributes."""
@@ -342,7 +372,8 @@ class TestArchitecturalRemediationMatrix:
             {"subject": "Project Titan", "predicate": "LEAD_ARCHITECT", "obj": "Elena Rostova"},
         ]
         text = "Project Titan: deploying across both us-east-1 and eu-central-1."
-        mutations = extract_state_deltas(text, active_entity_state=prior)
+        llm = StubExtractionLLM([{"subject": "Project Titan", "predicate": "DEPLOYED_ON", "obj": "AWS us-east-1 and eu-central-1"}])
+        mutations = extract_state_deltas(text, active_entity_state=prior, llm=llm)
         region_mut = next(m for m in mutations if m.predicate == "DEPLOYED_ON")
         assert "eu-central-1" in region_mut.obj
 

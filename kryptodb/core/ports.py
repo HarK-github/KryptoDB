@@ -129,6 +129,19 @@ class MemoryStore(Protocol):
     ) -> List[PathResult]:
         ...
 
+    def search_entities(
+        self, query: str, context: RequestContext, limit: int = 20
+    ) -> List[EntityRecord]:
+        ...
+
+    def add_entity(
+        self, id: str, name: str, context: RequestContext, metadata: Optional[Dict[str, Any]] = None
+    ) -> EntityRecord:
+        ...
+
+    def revoke_by_user(self, user_id: str, context: RequestContext) -> int:
+        ...
+
 
 @runtime_checkable
 class EventStore(Protocol):

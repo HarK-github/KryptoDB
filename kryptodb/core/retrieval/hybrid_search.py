@@ -5,6 +5,13 @@ from typing import Any, Dict, List, Optional
 
 from kryptodb.infrastructure.embeddings import embedding_service
 from kryptodb.infrastructure.neo4j.client import neo4j_client
+from kryptodb.infrastructure.neo4j.queries import (
+    HYBRID_FULLTEXT_ENTITY_QUERY,
+    HYBRID_VECTOR_ENTITY_ALT_QUERY,
+    HYBRID_VECTOR_ENTITY_QUERY,
+    SEMANTIC_SEED_FALLBACK_ENTITY_QUERY,
+    SEMANTIC_SEED_FALLBACK_FACT_QUERY,
+)
 from kryptodb.core.retrieval.rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger("kryptodb.hybrid_search")
@@ -45,16 +52,7 @@ class HybridSearchEngine:
         bm25_results: List[Dict[str, Any]] = []
 
         # 1. Vector Search on Entity nodes
-        vector_query = """
-        CALL db.index.vector.queryNodes('entity_embedding_idx', $top_k, $query_vec)
-        YIELD node, score
-        WHERE node.tenant_id = $tenant_id
-          AND ($active_scopes IS NULL OR EXISTS {
-              MATCH (node)-[r:FACT]-(:Entity)
-              WHERE r.scope IN $active_scopes
-          })
-        RETURN node.id AS id, node.name AS name, score AS vector_score
-        """
+        vector_query = HYBRID_VECTOR_ENTITY_QUERY
         try:
             records, _, _ = self.client.execute_query_with_retry(
                 vector_query,
@@ -72,16 +70,7 @@ class HybridSearchEngine:
         except Exception as exc:
             # Fallback to alternate index name if entity_embedding_idx not found
             try:
-                alt_query = """
-                CALL db.index.vector.queryNodes('entity_vector_index', $top_k, $query_vec)
-                YIELD node, score
-                WHERE node.tenant_id = $tenant_id
-                  AND ($active_scopes IS NULL OR EXISTS {
-                      MATCH (node)-[r:FACT]-(:Entity)
-                      WHERE r.scope IN $active_scopes
-                  })
-                RETURN node.id AS id, node.name AS name, score AS vector_score
-                """
+                alt_query = HYBRID_VECTOR_ENTITY_ALT_QUERY
                 records, _, _ = self.client.execute_query_with_retry(
                     alt_query,
                     top_k=top_k * 2,
@@ -96,30 +85,7 @@ class HybridSearchEngine:
                         "score": float(r["vector_score"])
                     })
             except Exception:
-                logger.debug("Vector search fallback (index may not exist): %s", exc)
-                # Fallback to direct name match or cosine search in-memory
-                fallback_query = """
-                MATCH (n:Entity)
-                WHERE n.tenant_id = $tenant_id AND toLower(n.name) CONTAINS toLower($term)
-                  AND ($active_scopes IS NULL OR EXISTS {
-                      MATCH (n)-[r:FACT]-(:Entity)
-                      WHERE r.scope IN $active_scopes
-                  })
-                RETURN n.id AS id, n.name AS name
-                LIMIT $top_k
-                """
-                try:
-                    records, _, _ = self.client.execute_query_with_retry(
-                        fallback_query,
-                        tenant_id=tenant_id,
-                        active_scopes=active_scopes,
-                        term=query.strip().split()[0] if query.strip() else "",
-                        top_k=top_k
-                    )
-                    for r in records:
-                        vector_results.append({"id": r["id"], "name": r["name"], "score": 0.5})
-                except Exception:
-                    pass
+                logger.debug("Vector search index not found: %s", exc)
 
         # 2. Fulltext BM25 Search on Entity nodes
         # Extract meaningful terms excluding stop words
@@ -130,17 +96,7 @@ class HybridSearchEngine:
 
         if clean_terms:
             lucene_query = " OR ".join([f"{term}*" for term in clean_terms])
-            fulltext_query = """
-            CALL db.index.fulltext.queryNodes('entity_name_ft', $lucene_query)
-            YIELD node, score
-            WHERE node.tenant_id = $tenant_id
-              AND ($active_scopes IS NULL OR EXISTS {
-                  MATCH (node)-[r:FACT]-(:Entity)
-                  WHERE r.scope IN $active_scopes
-              })
-            RETURN node.id AS id, node.name AS name, score AS bm25_score
-            LIMIT $top_k
-            """
+            fulltext_query = HYBRID_FULLTEXT_ENTITY_QUERY
             try:
                 records, _, _ = self.client.execute_query_with_retry(
                     fulltext_query,
@@ -189,16 +145,7 @@ class HybridSearchEngine:
         seeds_by_id: Dict[str, Dict[str, Any]] = {}
 
         # 1. Cosine similarity over Entity embeddings in active scope
-        entity_cypher = """
-        MATCH (e:Entity)-[r:FACT]-(:Entity)
-        WHERE e.tenant_id = $tenant_id
-          AND ($active_scopes IS NULL OR r.scope IN $active_scopes)
-          AND e.embedding IS NOT NULL
-        WITH DISTINCT e, vector.similarity.cosine(e.embedding, $query_vec) AS score
-        ORDER BY score DESC
-        RETURN e.id AS id, e.name AS name, score
-        LIMIT $top_k
-        """
+        entity_cypher = SEMANTIC_SEED_FALLBACK_ENTITY_QUERY
         try:
             if hasattr(self.client, "execute_query_with_retry"):
                 records, _, _ = self.client.execute_query_with_retry(
@@ -232,18 +179,7 @@ class HybridSearchEngine:
             logger.debug("Entity semantic seed fallback failed: %s", exc)
 
         # 2. Cosine similarity over Fact embeddings in active scope
-        fact_cypher = """
-        MATCH (s:Entity)-[r:FACT]->(o:Entity)
-        WHERE r.tenant_id = $tenant_id
-          AND ($active_scopes IS NULL OR r.scope IN $active_scopes)
-          AND r.embedding IS NOT NULL
-        WITH s, o, vector.similarity.cosine(r.embedding, $query_vec) AS score
-        ORDER BY score DESC
-        UNWIND [s, o] AS node
-        RETURN DISTINCT node.id AS id, node.name AS name, max(score) AS score
-        ORDER BY score DESC
-        LIMIT $top_k
-        """
+        fact_cypher = SEMANTIC_SEED_FALLBACK_FACT_QUERY
         try:
             if hasattr(self.client, "execute_query_with_retry"):
                 records, _, _ = self.client.execute_query_with_retry(

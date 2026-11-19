@@ -218,6 +218,24 @@ class FakeMemoryStore:
         key = (context.tenant_id, name.lower())
         return self.entities.get(key)
 
+    def search_entities(
+        self, query: str, context: RequestContext, limit: int = 50
+    ) -> List[EntityRecord]:
+        return [
+            e for (tenant, _), e in self.entities.items()
+            if tenant == context.tenant_id
+        ][:limit]
+
+    def revoke_by_user(self, user_id: str, context: RequestContext) -> int:
+        count = 0
+        for f in list(self.facts.values()):
+            if f.tenant_id == context.tenant_id:
+                f_user = getattr(f, "user_id", None) or f.metadata.get("user_id") or f.source_agent_id
+                if f_user == user_id or f.subject.lower() == user_id.lower() or not user_id:
+                    self.revoke(f.id, context)
+                    count += 1
+        return count
+
     def traverse_2hop(
         self, seed_names: List[str], context: RequestContext, max_results: int = 25
     ) -> List[PathResult]:
@@ -487,4 +505,32 @@ class FakeTurnAnalyzer:
             retrieval_needed=retrieval_needed,
             retrieval_query=retrieval_query,
         )
+
+
+class StubExtractionLLM:
+    """Stub LLM returning predefined FactItems via with_structured_output()."""
+
+    def __init__(self, facts_to_return: Optional[List[Dict[str, Any]]] = None):
+        self.facts_to_return = facts_to_return or []
+
+    def with_structured_output(self, schema: Any) -> Any:
+        class StructuredInvoker:
+            def __init__(self, facts: List[Dict[str, Any]]):
+                self.facts = facts
+
+            def invoke(self, messages: Any) -> Any:
+                from kryptodb.core.memory.delta_extractor import FactExtractionPatch, FactItem
+                return FactExtractionPatch(facts=[
+                    FactItem(
+                        subject=f["subject"],
+                        predicate=f["predicate"],
+                        obj=f["obj"],
+                        description=f.get("description", f"{f['subject']} {f['predicate']} {f['obj']}"),
+                        quote=f.get("quote", f["obj"]),
+                    )
+                    for f in self.facts
+                ])
+
+        return StructuredInvoker(self.facts_to_return)
+
 

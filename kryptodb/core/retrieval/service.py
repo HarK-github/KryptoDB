@@ -12,6 +12,7 @@ from kryptodb.core.retrieval.hybrid_search import HybridSearchEngine, hybrid_sea
 from kryptodb.core.retrieval.traversal import MultiHopTraverser, multihop_traverser
 from kryptodb.core.retrieval.ranking import AttributedMemoryResult, PathReranker, path_reranker
 from kryptodb.infrastructure.neo4j.client import neo4j_client
+from kryptodb.infrastructure.neo4j.queries import RETROSPECTIVE_FACTS_QUERY
 
 logger = logging.getLogger("kryptodb.core.retrieval.service")
 
@@ -260,23 +261,7 @@ class RetrievalService:
         if not getattr(self.client, "driver", None) and not hasattr(self.client, "execute_query_with_retry"):
             return []
 
-        retro_query = """
-        MATCH (s:Entity)-[e:FACT]-(t:Entity)
-        WHERE (s.id IN $seed_ids OR s.name IN $seed_ids OR s.name IN $seed_names OR
-               t.id IN $seed_ids OR t.name IN $seed_ids OR t.name IN $seed_names)
-          AND e.tenant_id = $tenant_id
-          AND e.status IN ['active', 'superseded']
-          AND ($active_scopes IS NULL OR e.scope IN $active_scopes)
-        RETURN startNode(e).id AS s_id, startNode(e).name AS s_name,
-               endNode(e).id AS t_id, endNode(e).name AS t_name,
-               e.id AS edge_id, e.predicate AS predicate,
-               e.description AS description, e.confidence AS confidence,
-               e.trust_weight AS trust_weight, e.scope AS scope,
-               e.status AS status, e.valid_from AS valid_from, e.valid_until AS valid_until,
-               e.created_at AS created_at
-        ORDER BY (CASE WHEN e.status = 'superseded' THEN 1 ELSE 0 END) DESC, e.created_at DESC
-        LIMIT $limit
-        """
+        retro_query = RETROSPECTIVE_FACTS_QUERY
         try:
             params = {
                 "seed_ids": seed_ids,

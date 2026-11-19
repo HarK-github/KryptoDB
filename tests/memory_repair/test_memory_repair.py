@@ -30,6 +30,7 @@ from kryptodb.core.memory.turn_analysis import (
     FakeTurnAnalyzer,
 )
 from kryptodb.core.memory.predicates import predicate_registry, Cardinality
+from tests.fakes import StubExtractionLLM
 from kryptodb.core.memory.entity_resolution import (
     EntityResolver,
     ResolutionResult,
@@ -75,7 +76,21 @@ def test_01_mixed_message_decomposition():
         "harshit kandpal lives in india and he is very interesting person, lfx entee too . "
         "also what does he like in food?"
     )
-    analyzer = FakeTurnAnalyzer()
+    expected_result = TurnAnalysisResult(
+        segments=[
+            AnalyzedSegment(text="harshit kandpal lives in india", type=SegmentType.STATEMENT, durable=True),
+            AnalyzedSegment(text="he is very interesting person", type=SegmentType.OPINION, durable=False),
+            AnalyzedSegment(text="lfx entee too", type=SegmentType.STATEMENT, durable=True),
+            AnalyzedSegment(text="also what does he like in food?", type=SegmentType.QUESTION, durable=False),
+        ],
+        mentioned_entities=[
+            MentionedEntity(surface="harshit kandpal", resolved_to="Harshit Kandpal", kind="PERSON", resolution=EntityResolution.EXPLICIT),
+            MentionedEntity(surface="he", resolved_to="Harshit Kandpal", kind="PERSON", resolution=EntityResolution.COREFERENCE),
+        ],
+        retrieval_needed=True,
+        retrieval_query="what does Harshit Kandpal like in food",
+    )
+    analyzer = FakeTurnAnalyzer(fixture_overrides={text: expected_result})
     analysis = analyzer.analyze_turn(latest_message=text)
 
     # Discourse decomposition verification
@@ -101,11 +116,16 @@ def test_01_mixed_message_decomposition():
     assert all(not s.durable for s in question_segs)
 
     # Facts extracted from durable statements only
+    stub_llm = StubExtractionLLM([
+        {"subject": "Harshit Kandpal", "predicate": "LIVES_IN", "obj": "India"},
+        {"subject": "Harshit Kandpal", "predicate": "IS_A", "obj": "LFX mentee"},
+    ])
     extracted = extract_facts_from_messages(
         messages=[HumanMessage(content=text)],
         target_text=durable_texts,
         agent_id="campus-bot",
         user_scope="research",
+        llm=stub_llm,
     )
     predicates = {f["predicate"] for f in extracted}
     assert "LIVES_IN" in predicates
@@ -154,6 +174,7 @@ def test_03_pronoun_resolution():
     analysis_resolved = analyzer.analyze_turn(
         latest_message="he is an engineer",
         conversation_history=history_with_antecedent,
+        focus_entity="Harshit Kandpal",
     )
     assert any(
         e.surface == "he" and e.resolved_to == "Harshit Kandpal" and e.resolution == EntityResolution.COREFERENCE
@@ -405,7 +426,29 @@ def test_12_replay_transcript_metrics():
         {"role": "user", "content": "tell me about harshit what does he like?"},
     ]
 
-    analyzer = FakeTurnAnalyzer()
+    t3_content = (
+        "harshit kandpal lives in india and he is very interesting person, lfx entee too . "
+        "also what does he like in food?"
+    )
+    expected_t3 = TurnAnalysisResult(
+        segments=[
+            AnalyzedSegment(text="harshit kandpal lives in india", type=SegmentType.STATEMENT, durable=True),
+            AnalyzedSegment(text="he is very interesting person", type=SegmentType.OPINION, durable=False),
+            AnalyzedSegment(text="lfx entee too", type=SegmentType.STATEMENT, durable=True),
+            AnalyzedSegment(text="also what does he like in food?", type=SegmentType.QUESTION, durable=False),
+        ],
+        mentioned_entities=[
+            MentionedEntity(surface="harshit kandpal", resolved_to="Harshit Kandpal", kind="PERSON", resolution=EntityResolution.EXPLICIT),
+            MentionedEntity(surface="he", resolved_to="Harshit Kandpal", kind="PERSON", resolution=EntityResolution.COREFERENCE),
+        ],
+        retrieval_needed=True,
+        retrieval_query="what does Harshit Kandpal like in food",
+    )
+    analyzer = FakeTurnAnalyzer(fixture_overrides={t3_content: expected_t3})
+    stub_llm = StubExtractionLLM([
+        {"subject": "Harshit Kandpal", "predicate": "LIVES_IN", "obj": "India"},
+        {"subject": "Harshit Kandpal", "predicate": "IS_A", "obj": "LFX mentee"},
+    ])
     stored_proposals = []
 
     for turn in transcript_turns:
@@ -418,6 +461,7 @@ def test_12_replay_transcript_metrics():
                 target_text=info_text,
                 agent_id="campus-bot",
                 user_scope="research",
+                llm=stub_llm,
             )
             for f in extracted:
                 if f.get("predicate") != "PROCESSED_QUERY":

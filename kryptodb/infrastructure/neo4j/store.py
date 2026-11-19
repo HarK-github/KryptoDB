@@ -27,11 +27,14 @@ from kryptodb.infrastructure.neo4j.client import neo4j_client
 from kryptodb.infrastructure.neo4j.queries import (
     APPEND_EVENT_QUERY,
     ATOMIC_SUPERSEDE_QUERY,
+    ADD_ENTITY_QUERY,
     FIND_ACTIVE_BY_SUBJECT_PREDICATE_QUERY,
     FIND_ENTITY_QUERY,
     GET_FACT_QUERY,
     LIST_EVENTS_BY_SESSION_QUERY,
+    REVOKE_BY_USER_QUERY,
     REVOKE_FACT_QUERY,
+    SEARCH_ENTITIES_PREFIX_QUERY,
     SEARCH_ENTITY_FULLTEXT_QUERY,
     SEARCH_ENTITY_VECTOR_QUERY,
     SEARCH_FACT_FULLTEXT_QUERY,
@@ -245,6 +248,64 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
             created_at=context.now,
             embedding=row.get("embedding"),
         )
+
+    def search_entities(
+        self, query: str, context: RequestContext, limit: int = 20
+    ) -> List[EntityRecord]:
+        clean_q = query.strip()
+        prefix = clean_q[:3] if len(clean_q) >= 3 else clean_q
+        try:
+            records = self._execute(
+                SEARCH_ENTITIES_PREFIX_QUERY,
+                prefix=prefix,
+                tenant_id=context.tenant_id,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.debug("search_entities failed: %s", exc)
+            records = []
+        return [
+            EntityRecord(
+                id=r.get("id", ""),
+                name=r.get("name", ""),
+                tenant_id=r.get("tenant_id", context.tenant_id),
+                created_at=context.now,
+                embedding=r.get("embedding"),
+            )
+            for r in records
+        ]
+
+    def add_entity(
+        self, id: str, name: str, context: RequestContext, metadata: Optional[Dict[str, Any]] = None
+    ) -> EntityRecord:
+        emb = self.embedder.embed(name) if self.embedder else None
+        self._execute(
+            ADD_ENTITY_QUERY,
+            id=id,
+            name=name,
+            tenant_id=context.tenant_id,
+            embedding=emb,
+            now=context.now.isoformat(),
+        )
+        return EntityRecord(
+            id=id,
+            name=name,
+            tenant_id=context.tenant_id,
+            created_at=context.now,
+            embedding=emb,
+            metadata=metadata or {},
+        )
+
+    def revoke_by_user(self, user_id: str, context: RequestContext) -> int:
+        records = self._execute(
+            REVOKE_BY_USER_QUERY,
+            tenant_id=context.tenant_id,
+            user_id=user_id,
+            now=context.now.isoformat(),
+        )
+        if records:
+            return int(records[0].get("revoked_count", 0))
+        return 0
 
     def traverse_2hop(
         self, seed_names: List[str], context: RequestContext, max_results: int = 25

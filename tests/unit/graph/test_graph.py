@@ -49,6 +49,20 @@ def mock_redis(monkeypatch):
     mock_redis_wrapper = MockRedisWrapper()
     monkeypatch.setattr("kryptodb.integrity.partition_crypto.redis_client", mock_redis_wrapper)
 
+@pytest.fixture(autouse=True)
+def clean_static_edges():
+    try:
+        from kryptodb.infrastructure.neo4j.client import neo4j_client
+        neo4j_client.execute_query_with_retry("MATCH ()-[r:FACT]->() WHERE r.id IN ['old', 'new'] DELETE r")
+    except Exception:
+        pass
+    yield
+    try:
+        from kryptodb.infrastructure.neo4j.client import neo4j_client
+        neo4j_client.execute_query_with_retry("MATCH ()-[r:FACT]->() WHERE r.id IN ['old', 'new'] DELETE r")
+    except Exception:
+        pass
+
 def test_supersession_closes_old_edge():
     old = Edge(id="old", type="FACT", predicate="KNOWS", permission_scope="TEST", source_agent_id="test", subject_id="A", object_id="B", valid_from=datetime.now())
     new = Edge(id="new", type="FACT", predicate="KNOWS", permission_scope="TEST", source_agent_id="test", subject_id="A", object_id="B")
