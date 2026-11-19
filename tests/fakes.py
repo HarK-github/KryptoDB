@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from kryptodb.core.context import RequestContext
+from kryptodb.core.memory.turn_analysis import (
+    AnalyzedSegment,
+    EntityResolution,
+    MentionedEntity,
+    SegmentType,
+    TurnAnalysisResult,
+)
 from kryptodb.core.memory.models import MemoryRecord, MemoryStatus
 from kryptodb.core.ports import (
     CandidateItem,
@@ -306,3 +314,177 @@ class FakeReranker:
             scored.append((it, float(jaccard)))
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored
+
+
+class FakeTurnAnalyzer:
+    """Deterministic test double providing predictable turn analysis for testing."""
+
+    def __init__(self, fixture_overrides: Optional[Dict[str, TurnAnalysisResult]] = None):
+        self.fixture_overrides = fixture_overrides or {}
+
+    def analyze_turn(
+        self,
+        latest_message: str,
+        conversation_history: Optional[List[Any]] = None,
+        focus_entity: Optional[str] = None,
+    ) -> TurnAnalysisResult:
+        clean = latest_message.strip()
+
+        # Check explicit fixture overrides
+        if clean in self.fixture_overrides:
+            return self.fixture_overrides[clean]
+
+        lowered = clean.lower()
+
+        # 1. Chitchat
+        if lowered in ("hi", "hello", "hey", "howdy", "greetings", "thanks", "thank you", "bye", "good morning", "good evening", "good afternoon") or lowered.startswith("good morning"):
+            return TurnAnalysisResult(
+                segments=[
+                    AnalyzedSegment(
+                        text=clean,
+                        type=SegmentType.CHITCHAT,
+                        durable=False,
+                        temporary=False,
+                    )
+                ],
+                mentioned_entities=[],
+                retrieval_needed=False,
+                retrieval_query=None,
+            )
+
+        question_starters = ("what", "where", "who", "when", "why", "how", "tell me", "explain", "does", "do", "can", "compare", "generate", "summarize")
+        command_starters = ("confirm", "please confirm", "forget", "clear", "stop", "delete", "make sure", "keep", "keep everything", "constraint")
+        raw_sentences = [s.strip() for s in re.split(r'(?<=[.?!])\s+', clean) if s.strip()]
+        if len(raw_sentences) > 1:
+            segs = []
+            ret_query = None
+            for sent in raw_sentences:
+                s_low = sent.lower()
+                is_q = sent.endswith("?") or any(s_low.startswith(q) for q in question_starters) or "summary" in s_low or "sign-off" in s_low or "question" in s_low or "compare" in s_low
+                is_retract = "forget" in s_low or "delete" in s_low or "retract" in s_low
+                is_cmd = any(s_low.startswith(c) for c in command_starters)
+                is_temporal = any(w in s_low for w in ("push the", "delay", "reschedule", "postpone", "cutover back", "by 10 days", "back by"))
+                is_correction = any(w in s_low for w in ("had to migrate", "migrate the", "instead", "actually", "update on"))
+
+                if is_q:
+                    segs.append(AnalyzedSegment(text=sent, type=SegmentType.QUESTION, durable=False))
+                    if not ret_query:
+                        ret_query = sent.rstrip("?").strip()
+                elif is_retract:
+                    segs.append(AnalyzedSegment(text=sent, type=SegmentType.RETRACTION, durable=False))
+                elif is_cmd:
+                    segs.append(AnalyzedSegment(text=sent, type=SegmentType.COMMAND, durable=False))
+                elif is_temporal:
+                    segs.append(AnalyzedSegment(text=sent, type=SegmentType.TEMPORAL_MODIFICATION, durable=True))
+                elif is_correction:
+                    segs.append(AnalyzedSegment(text=sent, type=SegmentType.CORRECTION, durable=True))
+                else:
+                    segs.append(AnalyzedSegment(text=sent, type=SegmentType.STATEMENT, durable=True))
+
+            has_q = any(s.type == SegmentType.QUESTION for s in segs)
+            return TurnAnalysisResult(
+                segments=segs,
+                mentioned_entities=[],
+                retrieval_needed=has_q,
+                retrieval_query=ret_query if has_q else None,
+            )
+
+        # Single command / retraction check
+        if any(lowered.startswith(w) for w in ("forget", "delete", "retract", "remove", "clear")) or "forget that" in lowered or "forget my" in lowered:
+            return TurnAnalysisResult(
+                segments=[
+                    AnalyzedSegment(
+                        text=clean,
+                        type=SegmentType.RETRACTION,
+                        durable=False,
+                        temporary=False,
+                    )
+                ],
+                mentioned_entities=[],
+                retrieval_needed=False,
+                retrieval_query=None,
+            )
+
+        if any(lowered.startswith(w) for w in ("confirm", "please confirm", "stop")):
+            return TurnAnalysisResult(
+                segments=[
+                    AnalyzedSegment(
+                        text=clean,
+                        type=SegmentType.COMMAND,
+                        durable=False,
+                        temporary=False,
+                    )
+                ],
+                mentioned_entities=[],
+                retrieval_needed=False,
+                retrieval_query=None,
+            )
+
+        # Pronoun resolution check
+        antecedent = focus_entity
+
+        # Check for hypothetical
+        is_hypothetical = any(w in lowered for w in ("might try", "maybe i", "could try", "thinking about trying"))
+
+        # Pure Question check
+        question_starters = ("what", "where", "who", "when", "why", "how", "tell me", "explain", "does", "do", "can", "compare", "generate", "summarize")
+        is_question = clean.endswith("?") or any(lowered.startswith(q) for q in question_starters)
+
+        if is_question:
+            resolved_query = clean
+            entities = []
+            if " he " in f" {lowered} " or lowered.startswith("he "):
+                if antecedent:
+                    resolved_query = re.sub(r"\bhe\b", antecedent, clean, flags=re.IGNORECASE)
+                    entities.append(
+                        MentionedEntity(surface="he", resolved_to=antecedent, kind="PERSON", resolution=EntityResolution.COREFERENCE)
+                    )
+                else:
+                    entities.append(
+                        MentionedEntity(surface="he", resolved_to=None, kind="PERSON", resolution=EntityResolution.UNRESOLVED)
+                    )
+
+            return TurnAnalysisResult(
+                segments=[
+                    AnalyzedSegment(
+                        text=clean,
+                        type=SegmentType.QUESTION,
+                        durable=False,
+                        temporary=False,
+                    )
+                ],
+                mentioned_entities=entities,
+                retrieval_needed=True,
+                retrieval_query=resolved_query.rstrip("?").strip(),
+            )
+
+        # Pure Statement / Preference
+        is_pref = any(w in lowered for w in ("likes", "loves", "prefers", "dislikes", "favorite"))
+        seg_type = SegmentType.HYPOTHETICAL if is_hypothetical else (SegmentType.PREFERENCE if is_pref else SegmentType.STATEMENT)
+        durable = not is_hypothetical
+
+        entities = []
+        if re.search(r"\bhe\b", lowered):
+            if antecedent:
+                entities.append(MentionedEntity(surface="he", resolved_to=antecedent, kind="PERSON", resolution=EntityResolution.COREFERENCE))
+            else:
+                entities.append(MentionedEntity(surface="he", resolved_to=None, kind="PERSON", resolution=EntityResolution.UNRESOLVED))
+                durable = False
+
+        retrieval_needed = lowered.startswith("store fact:")
+        retrieval_query = clean if retrieval_needed else None
+
+        return TurnAnalysisResult(
+            segments=[
+                AnalyzedSegment(
+                    text=clean,
+                    type=seg_type,
+                    durable=durable,
+                    temporary=False,
+                )
+            ],
+            mentioned_entities=entities,
+            retrieval_needed=retrieval_needed,
+            retrieval_query=retrieval_query,
+        )
+

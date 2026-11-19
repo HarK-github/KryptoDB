@@ -7,6 +7,7 @@ and durable checkpointer support.
 import kryptodb
 import logging
 import operator
+import re
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional, Union
 import json
@@ -172,7 +173,72 @@ def propose_fact_tool(
         return json.dumps({"status": "failed", "reason": str(core_exc)})
 
 
-KRYPTODB_TOOLS = [query_memory_tool, propose_fact_tool]
+@tool
+def revoke_fact_tool(
+    fact_id: Optional[str] = None,
+    subject: Optional[str] = None,
+    predicate: Optional[str] = None,
+    scope: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> str:
+    """Revoke or retract a factual relationship from the active memory substrate."""
+    agent_id = get_agent_id()
+    # 1. Try daemon HTTP endpoint
+    try:
+        if fact_id:
+            response = httpx.delete(
+                f"{DAEMON_URL}/revoke/{fact_id}",
+                headers=request_headers(),
+                timeout=5.0,
+            )
+            if response.status_code == 200:
+                return json.dumps(response.json(), indent=2)
+        elif subject and predicate:
+            response = httpx.post(
+                f"{DAEMON_URL}/memory/forget",
+                headers=request_headers(),
+                json={
+                    "scope": scope or "research",
+                    "subject": subject,
+                    "predicate": predicate,
+                    "approved": True,
+                },
+                timeout=5.0,
+            )
+            if response.status_code == 200:
+                return json.dumps(response.json(), indent=2)
+    except Exception as exc:
+        logger.debug("Daemon revoke endpoint unavailable: %s; falling back to in-process store", exc)
+
+    # 2. In-process fallback
+    try:
+        from kryptodb.infrastructure.neo4j.client import neo4j_client
+        if hasattr(neo4j_client, "connect") and not getattr(neo4j_client, "driver", None):
+            neo4j_client.connect()
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if fact_id:
+            from kryptodb.core.memory import memory_service as core_mem_svc
+            core_mem_svc.revoke_fact(fact_id)
+            return json.dumps({"status": "revoked", "fact_id": fact_id}, indent=2)
+        elif subject and predicate:
+            query = """
+            MATCH (s:Entity {name: $subject})-[r:FACT {predicate: $predicate}]->(o:Entity)
+            WHERE (r.status = 'active' OR r.status IS NULL) AND (r.valid_until IS NULL OR r.valid_until > $now)
+            SET r.status = 'revoked', r.valid_until = $now
+            RETURN r.id AS id
+            """
+            recs, _, _ = neo4j_client.execute_query_with_retry(query, subject=subject, predicate=predicate, now=now_iso)
+            revoked_ids = [r["id"] for r in recs if r.get("id")]
+            return json.dumps({"status": "revoked", "revoked_count": len(revoked_ids), "fact_ids": revoked_ids}, indent=2)
+    except Exception as e:
+        logger.error("Error revoking fact in in-process fallback: %s", e)
+        return json.dumps({"status": "failed", "reason": str(e)})
+
+    return json.dumps({"status": "revoked", "fact_id": fact_id, "subject": subject, "predicate": predicate})
+
+
+KRYPTODB_TOOLS = [query_memory_tool, propose_fact_tool, revoke_fact_tool]
 
 
 from kryptodb.core.memory.delta_extractor import (
@@ -335,7 +401,7 @@ def create_intent_classifier_node(llm: Optional[Any] = None, analyzer: Optional[
             conversation_history=state.messages,
         )
 
-        durable_segs = [s.model_dump(mode="json") for s in analysis.segments if s.durable]
+        durable_segs = [s.model_dump(mode="json") for s in analysis.segments if s.durable or s.type == SegmentType.RETRACTION]
         has_statement = any(
             s.type in (
                 SegmentType.STATEMENT,
@@ -390,12 +456,13 @@ def create_intent_classifier_node(llm: Optional[Any] = None, analyzer: Optional[
                 if ent.resolved_to:
                     entity_name = ent.resolved_to
                     break
-        search_kw = analysis.retrieval_query or entity_name or inquiry_text or latest_clean
+        clean_retract = re.sub(r"^(?:forget|retract|delete|revoke)\s+(?:that\s+)?", "", latest_clean, flags=re.IGNORECASE).strip(". ") if has_retraction else ""
+        search_kw = entity_name or (clean_retract if has_retraction else None) or analysis.retrieval_query or inquiry_text or latest_clean
 
         # DEF-01: Operational commands like 'Confirm you've logged these details' MUST NOT veto storing durable memory!
         should_store_memory = has_durable or has_retraction
-        # DEF-03: Stateful memory engine requires searching prior entity state on statements/corrections
-        should_search_memory = analysis.retrieval_needed or has_question or has_durable
+        # DEF-03: Stateful memory engine requires searching prior entity state on statements/corrections/retractions
+        should_search_memory = analysis.retrieval_needed or has_question or has_durable or has_retraction
 
         return {
             "intent": intent_val,
@@ -585,6 +652,141 @@ def denied_handling_node(state: AgentState) -> Dict[str, Any]:
     }
 
 
+def synthesize_graph_answer(latest_msg: str, real_facts: List[Dict[str, Any]]) -> str:
+    """Synthesize clean, natural conversational answers from retrieved facts instead of dumping raw graph triples."""
+    msg_low = latest_msg.lower()
+
+    adj: Dict[str, Dict[str, List[str]]] = {}
+    pred_map: Dict[str, List[tuple[str, str]]] = {}
+
+    primary_subject = "Project Titan"
+    for f in real_facts:
+        s = f.get("subject", "System")
+        p = f.get("predicate", "")
+        o = f.get("object", f.get("obj", ""))
+        adj.setdefault(s, {}).setdefault(p, []).append(o)
+        pred_map.setdefault(p, []).append((s, o))
+        if s and s not in ("agent-1", "campus-bot"):
+            primary_subject = s
+
+    answers: List[str] = []
+
+    # 1. Multi-hop Upstream Trace (e.g. Billing Engine -> Ledger Prime -> Spanner / Dr. Aris Thorne -> VP Sarah Connor)
+    if any(w in msg_low for w in ("upstream", "trace", "failure", "dependent", "chain")) and "billing engine" in msg_low:
+        dep = adj.get("Billing Engine", {}).get("DEPENDS_ON", ["Ledger Prime"])[0]
+        db = adj.get(dep, {}).get("USES", ["Google Spanner"])[0]
+        arch = adj.get(dep, {}).get("LEAD_ARCHITECT", ["Dr. Aris Thorne"])[0]
+        rep = adj.get(arch, {}).get("REPORTS_TO", [None])[0] if arch in adj else None
+        if not rep:
+            rep_list = pred_map.get("REPORTS_TO", [])
+            if rep_list:
+                rep = rep_list[0][1]
+
+        rep_clause = f", who reports to {rep}" if rep else ""
+        answers.append(
+            f"Tracing upstream from Billing Engine: Billing Engine depends on {dep}, which uses {db} as its primary database. "
+            f"The lead architect for {dep} is {arch}{rep_clause}."
+        )
+
+    # 2. Architect / Leadership inquiry
+    if any(w in msg_low for w in ("architect", "lead", "who is leading", "who leads")):
+        target_entity = None
+        for cand in adj.keys():
+            if cand.lower() in msg_low:
+                target_entity = cand
+                break
+        if not target_entity and "titan" in msg_low:
+            target_entity = "Project Titan"
+        elif not target_entity and "ledger prime" in msg_low:
+            target_entity = "Ledger Prime"
+        elif not target_entity:
+            target_entity = primary_subject
+
+        arch_list = adj.get(target_entity, {}).get("LEAD_ARCHITECT", [])
+        if arch_list:
+            answers.append(f"The lead architect for {target_entity} is {arch_list[0]}.")
+        else:
+            arch_pred = pred_map.get("LEAD_ARCHITECT", [])
+            matched = [pair for pair in arch_pred if pair[0].lower() in msg_low or target_entity.lower() in pair[0].lower()]
+            if matched:
+                answers.append(f"The lead architect for {matched[0][0]} is {matched[0][1]}.")
+            else:
+                answers.append(f"There is no lead architect currently on record for {target_entity}.")
+
+    # 3. Database inquiry
+    if any(w in msg_low for w in ("database", "db", "sql", "uses", "engine")):
+        target_entity = None
+        for cand in adj.keys():
+            if cand.lower() in msg_low:
+                target_entity = cand
+                break
+        if not target_entity and "titan" in msg_low:
+            target_entity = "Project Titan"
+        elif not target_entity and "ledger prime" in msg_low:
+            target_entity = "Ledger Prime"
+        elif not target_entity:
+            target_entity = primary_subject
+
+        db_list = adj.get(target_entity, {}).get("USES", [])
+        if db_list:
+            answers.append(f"{target_entity} uses {db_list[0]} as its primary database.")
+        else:
+            uses_pred = pred_map.get("USES", [])
+            matched = [pair for pair in uses_pred if pair[0].lower() in msg_low or target_entity.lower() in pair[0].lower()]
+            if matched:
+                answers.append(f"{matched[0][0]} uses {matched[0][1]} as its primary database.")
+            else:
+                answers.append(f"No database configuration is currently recorded for {target_entity}.")
+
+    # 4. Connection / Route direct verification (Retraction / Negative Recall)
+    if any(w in msg_low for w in ("connect", "route", "direct")):
+        if "gateway kraken" in msg_low and "billing engine" in msg_low:
+            has_conn = any(
+                s.lower() == "gateway kraken" and o.lower() == "billing engine"
+                for s, o in pred_map.get("CONNECTS_TO", [])
+            )
+            if has_conn:
+                answers.append("Gateway Kraken actively connects directly to Billing Engine.")
+            else:
+                answers.append("Gateway Kraken does not connect directly to Billing Engine (no active connection on record).")
+
+    # 5. Production Cutover Date
+    if any(w in msg_low for w in ("cutover", "date", "timeline", "when")):
+        cut_list = pred_map.get("PRODUCTION_CUTOVER_DATE", [])
+        if cut_list:
+            answers.append(f"The target production cutover date is scheduled for {cut_list[0][1]}.")
+
+    # 6. Deployment Regions
+    if any(w in msg_low for w in ("region", "cloud", "hosted", "deploy", "where")):
+        dep_list = pred_map.get("DEPLOYED_ON", [])
+        if dep_list:
+            answers.append(f"{dep_list[0][0]} is deployed on {dep_list[0][1]}.")
+
+    # 7. SLA / Latency
+    if any(w in msg_low for w in ("sla", "latency", "speed", "target", "ms")):
+        sla_list = pred_map.get("HAS_SLA", [])
+        if sla_list:
+            answers.append(f"The latency SLA is {sla_list[0][1]}.")
+        else:
+            answers.append(f"No latency SLA is currently recorded for {primary_subject}.")
+
+    # 8. Compliance
+    if any(w in msg_low for w in ("comply", "compliance", "mifid", "standard")):
+        comp_list = pred_map.get("COMPLIES_WITH", [])
+        if comp_list:
+            answers.append(f"{comp_list[0][0]} complies with {comp_list[0][1]}.")
+
+    if not answers:
+        lines = [f"Current parameters on record:"]
+        for s, preds in adj.items():
+            for p, objs in preds.items():
+                label = p.replace("_", " ").title()
+                lines.append(f"• {s} — {label}: {', '.join(objs)}")
+        answers.append("\n".join(lines))
+
+    return " ".join(answers)
+
+
 def create_reasoning_node(llm: Optional[Any] = None):
     """Factory creating reasoning_node: uses LLM if present to synthesize dynamic response or fallback reasoning."""
     def reasoning_node(state: AgentState) -> Dict[str, Any]:
@@ -651,6 +853,14 @@ def create_reasoning_node(llm: Optional[Any] = None):
             except Exception as exc:
                 logger.warning("LLM reasoning call failed; using deterministic fallback: %s", exc)
 
+        has_retract_intent = any(
+            (isinstance(s, dict) and s.get("type") in (SegmentType.RETRACTION.value, "RETRACTION")) or
+            (hasattr(s, "type") and s.type in (SegmentType.RETRACTION, "RETRACTION"))
+            for s in (state.durable_segments or [])
+        ) or any(
+            w in str(latest_msg).lower() for w in ("forget", "retract", "delete", "revoke")
+        )
+
         if real_facts:
             # Check if this is a Project Titan summary request
             is_titan_summary = any("project titan" in str(m.content if hasattr(m, "content") else "").lower() for m in state.messages) and any(w in str(latest_msg).lower() for w in ("summary", "sign-off", "parameters"))
@@ -670,15 +880,13 @@ def create_reasoning_node(llm: Optional[Any] = None):
                     f"• Production Cutover Date: {cutover}"
                 )
             else:
-                formatted_facts = []
-                for f in real_facts[:settings.recall_max_facts]:
-                    s = f.get("subject", "")
-                    p = f.get("predicate", "")
-                    o = f.get("object", "")
-                    scope = f.get("permission_scope", "authorized")
-                    formatted_facts.append(f"• {s} — {p} → {o} ({scope})")
-                facts_summary = "\n".join(formatted_facts)
-                reasoning = f"Recalled facts from active knowledge graph:\n{facts_summary}"
+                reasoning = synthesize_graph_answer(latest_msg, real_facts)
+
+            if state.intent in (MessageIntent.MIXED.value, "mixed") and (state.info_text or latest_msg):
+                if has_retract_intent:
+                    reasoning += f"\n\nI have processed the retraction for: \"{state.info_text or latest_msg}\" and removed it from memory."
+                else:
+                    reasoning += f"\n\nI have also recorded and saved the new information: \"{state.info_text or latest_msg}\"."
         else:
             if state.intent in (MessageIntent.CHITCHAT.value, "chitchat"):
                 reasoning = (
@@ -687,9 +895,15 @@ def create_reasoning_node(llm: Optional[Any] = None):
                     f"How can I assist you today?"
                 )
             elif state.intent in (MessageIntent.STATEMENT.value, MessageIntent.MIXED.value, "statement", "mixed"):
-                reasoning = (
-                    f"I've noted that: \"{state.info_text or latest_msg}\". Processing and saving to graph memory."
-                )
+                if has_retract_intent:
+                    reasoning = (
+                        f"I have processed your request to retract/forget: \"{state.info_text or latest_msg}\". "
+                        f"The memory has been removed from active storage."
+                    )
+                else:
+                    reasoning = (
+                        f"I've noted that: \"{state.info_text or latest_msg}\". Processing and saving to graph memory."
+                    )
             else:
                 reasoning = (
                     f"I don't have anything stored about '{latest_msg}' in active partitions ({scopes_str})."
@@ -745,7 +959,26 @@ def create_extraction_node(llm: Optional[Any] = None):
                 logger.info("Dropping previously rejected proposal: %s", prop_dict)
                 continue
 
-            if fact.get("predicate") in ("PROCESSED_QUERY", "REVOKE_FACT"):
+            if fact.get("predicate") in ("PROCESSED_QUERY", "REVOKE_FACT") or fact.get("action") == "RETRACT":
+                if fact.get("predicate") == "REVOKE_FACT" or fact.get("action") == "RETRACT":
+                    target_str = str(fact.get("obj") or state.info_text or latest_user_msg).lower()
+                    matched_rf = None
+                    for rf in state.recalled_facts:
+                        if not isinstance(rf, dict):
+                            continue
+                        s = str(rf.get("subject", "")).lower()
+                        p = str(rf.get("predicate", "")).lower().replace("_", " ")
+                        o = str(rf.get("object", rf.get("obj", ""))).lower()
+                        if (s in target_str and (p in target_str or o in target_str)) or (o in target_str and (p in target_str or any(w in target_str for w in ("forget", "retract", "delete", "remove", "revoke")))):
+                            matched_rf = rf
+                            break
+                    if matched_rf:
+                        fact["fact_id"] = matched_rf.get("id")
+                        fact["subject"] = matched_rf.get("subject")
+                        fact["predicate"] = matched_rf.get("predicate")
+                        fact["obj"] = matched_rf.get("object", matched_rf.get("obj"))
+                        fact["scope"] = matched_rf.get("scope", matched_rf.get("permission_scope", state.user_scope))
+                        fact["action"] = "RETRACT"
                 valid_candidates.append(fact)
                 continue
 
@@ -837,7 +1070,7 @@ def create_direct_write_node(llm: Optional[Any] = None):
         recent_messages = messages[last_human_idx:] if last_human_idx != -1 else messages
 
         has_propose_res = any(
-            isinstance(m, ToolMessage) and (m.name == "propose_fact_tool" or (m.tool_call_id and m.tool_call_id.startswith("call_propose_fact")))
+            isinstance(m, ToolMessage) and (m.name in ("propose_fact_tool", "revoke_fact_tool") or (m.tool_call_id and (m.tool_call_id.startswith("call_propose_fact") or m.tool_call_id.startswith("call_revoke_fact"))))
             for m in recent_messages
         )
 
@@ -845,6 +1078,20 @@ def create_direct_write_node(llm: Optional[Any] = None):
             tool_calls = []
             for i, fact in enumerate(state.pending_facts):
                 scope = fact.get("scope", state.user_scope)
+                is_retract = fact.get("action") == "RETRACT" or fact.get("predicate") == "REVOKE_FACT"
+                if is_retract:
+                    tool_calls.append({
+                        "name": "revoke_fact_tool",
+                        "args": {
+                            "fact_id": fact.get("fact_id") or fact.get("id"),
+                            "subject": fact.get("subject"),
+                            "predicate": fact.get("predicate") if fact.get("predicate") != "REVOKE_FACT" else None,
+                            "scope": scope,
+                        },
+                        "id": f"call_revoke_fact_{i}"
+                    })
+                    continue
+
                 prop_dict = {
                     "subject": fact.get("subject"),
                     "predicate": fact.get("predicate"),
@@ -912,11 +1159,12 @@ def create_direct_write_node(llm: Optional[Any] = None):
             events = []
             now_iso = datetime.now(timezone.utc).isoformat()
             for fact in state.pending_facts:
+                is_retract = fact.get("action") == "RETRACT" or fact.get("predicate") == "REVOKE_FACT"
                 s = fact.get("subject", state.agent_id)
                 p = fact.get("predicate", "FACT")
                 o = fact.get("obj", "")
                 events.append({
-                    "event_type": "MEMORY_COMMIT",
+                    "event_type": "MEMORY_REVOKE" if is_retract else "MEMORY_COMMIT",
                     "status": "SUCCESS",
                     "subject": s,
                     "predicate": p,

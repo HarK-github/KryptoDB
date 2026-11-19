@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from kryptodb.core.memory.models import MemoryStatus, MemoryRecord
 from kryptodb.core.memory.predicates import PredicateRegistry, Cardinality
-from kryptodb.core.memory.conflict_engine import ConflictEngine, ConflictResolution
+from kryptodb.core.memory.conflicts import ConflictEngine, ConflictResolution
 from kryptodb.core.memory.memory_service import MemoryService
 
 def test_predicate_registry():

@@ -54,7 +54,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
     const [currentScope, setCurrentScope] = useState('AUTO')
     const currentScopeRef = useRef(currentScope)
     useEffect(() => { currentScopeRef.current = currentScope }, [currentScope])
-    const [availableScopes, setAvailableScopes] = useState<string[]>(['AUTO', 'research', 'PROJECT:synapse', 'PROJECT:kryptodb'])
+    const [availableScopes, setAvailableScopes] = useState<string[]>(['AUTO', 'research', 'PROJECT:synapse', 'PROJECT:kryptodb', 'CONFIDENTIAL:vault'])
     const [showScopePicker, setShowScopePicker] = useState(false)
     const [agentsData, setAgentsData] = useState<Record<string, BackendAgent>>({})
     const [agentsLoading, setAgentsLoading] = useState(true)

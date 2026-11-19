@@ -1,6 +1,6 @@
 from .models import MemoryRecord, MemoryStatus, MemoryType
 from .predicates import PredicateRegistry, predicate_registry, Cardinality
-from .conflict_engine import ConflictEngine, conflict_engine, ConflictResolution
+from .conflicts import ConflictEngine, conflict_engine, ConflictResolution
 from .memory_service import MemoryService, memory_service
 
 __all__ = [

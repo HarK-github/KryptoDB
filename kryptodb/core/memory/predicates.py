@@ -73,6 +73,7 @@ class PredicateRegistry:
             "DEPLOYED_TO": Cardinality.ONE,
             "HOSTED_ON": Cardinality.ONE,
             "RUNS_ON": Cardinality.ONE,
+            "RUNS": Cardinality.ONE,
             "USES": Cardinality.ONE,
             "DATABASE_ENGINE": Cardinality.ONE,
             "DATABASE": Cardinality.ONE,
@@ -93,6 +94,9 @@ class PredicateRegistry:
             "PLANNED_TARGET": Cardinality.MANY,
             "MIGRATION_STATUS": Cardinality.ONE,
             "APPROVED_MIGRATION": Cardinality.MANY,
+            "ROUTES_TO": Cardinality.MANY,
+            "COMPLIES_WITH": Cardinality.MANY,
+            "LEADS": Cardinality.ONE,
         }
 
         # Canonical aliases
@@ -128,6 +132,10 @@ class PredicateRegistry:
             "PLANNED_MIGRATION": "PLANNED_TARGET",
             "MIGRATES_TO": "PLANNED_TARGET",
             "MIGRATION_APPROVED": "APPROVED_MIGRATION",
+            "UPGRADED_TO": "RUNS",
+            "MIGRATED_TO": "RUNS",
+            "SWITCHED_TO": "RUNS",
+            "OPERATES": "RUNS",
         }
 
         # Inverses

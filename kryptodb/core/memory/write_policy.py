@@ -126,10 +126,11 @@ def validate_proposal(
             f"Rejected vague predicate '{p}'. Predicates must be specific (e.g. LIKES, LIVES_IN, WORKS_FOR)."
         )
 
+    from kryptodb.core.memory.predicates import Cardinality
     if not predicate_registry.is_registered(norm_pred):
-        raise WritePolicyViolation(
-            f"Predicate '{p}' (normalized: '{norm_pred}') is not registered in the Predicate Registry."
-        )
+        # Dynamic Schema Evolution: Allow the LLM to decide novel predicates dynamically
+        predicate_registry.register(norm_pred, cardinality=Cardinality.MANY)
+        logger.info("Dynamic Schema Evolution: Auto-registered novel predicate '%s' with Cardinality.MANY", norm_pred)
 
     # 5. Confidence Threshold
     if confidence < 0.0 or confidence > 1.0:

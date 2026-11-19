@@ -4,7 +4,8 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from kryptodb.infrastructure.embeddings import embedding_service
-from kryptodb.storage.neo4j_client import neo4j_client
+from kryptodb.infrastructure.neo4j.client import neo4j_client
+from kryptodb.core.retrieval.rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger("kryptodb.hybrid_search")
 
@@ -17,37 +18,9 @@ STOP_WORDS = {
     "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
     "can", "will", "just", "should", "now", "what", "which", "who", "whom", "this",
     "that", "these", "those", "am", "been", "being", "have", "has", "had", "having",
-    "do", "does", "did", "doing", "tell", "me"
+    "do", "does", "did", "doing", "tell", "me",
+    "next", "last", "previous", "prior", "week", "month", "year", "day", "time"
 }
-
-def reciprocal_rank_fusion(
-    vector_results: List[Dict[str, Any]],
-    bm25_results: List[Dict[str, Any]],
-    k: int = 60
-) -> List[Dict[str, Any]]:
-    """
-    Reciprocal Rank Fusion (RRF) algorithm to fuse rank lists from
-    dense vector search and sparse BM25 fulltext search.
-    RRF_score(d) = sum( 1.0 / (k + rank(d)) )
-    """
-    scores: Dict[str, float] = {}
-    items: Dict[str, Dict[str, Any]] = {}
-
-    for rank, item in enumerate(vector_results):
-        item_id = str(item.get("id") or item.get("name"))
-        scores[item_id] = scores.get(item_id, 0.0) + (1.0 / (k + rank + 1))
-        items[item_id] = {**item, "vector_rank": rank + 1}
-
-    for rank, item in enumerate(bm25_results):
-        item_id = str(item.get("id") or item.get("name"))
-        scores[item_id] = scores.get(item_id, 0.0) + (1.0 / (k + rank + 1))
-        if item_id in items:
-            items[item_id]["bm25_rank"] = rank + 1
-        else:
-            items[item_id] = {**item, "bm25_rank": rank + 1}
-
-    sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
-    return [{**items[i], "rrf_score": scores[i]} for i in sorted_ids]
 
 class HybridSearchEngine:
     def __init__(self, client: Any = None):
@@ -57,11 +30,12 @@ class HybridSearchEngine:
         self,
         query: str,
         tenant_id: str = "default",
-        top_k: int = 10
+        top_k: int = 10,
+        active_scopes: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Executes parallel vector and fulltext BM25 search on Neo4j Entity nodes
-        and fuses results with RRF.
+        and fuses results with RRF. If 0 seeds found, falls back to semantic vector search.
         """
         if not query or not query.strip():
             return []
@@ -75,6 +49,10 @@ class HybridSearchEngine:
         CALL db.index.vector.queryNodes('entity_embedding_idx', $top_k, $query_vec)
         YIELD node, score
         WHERE node.tenant_id = $tenant_id
+          AND ($active_scopes IS NULL OR EXISTS {
+              MATCH (node)-[r:FACT]-(:Entity)
+              WHERE r.scope IN $active_scopes
+          })
         RETURN node.id AS id, node.name AS name, score AS vector_score
         """
         try:
@@ -82,7 +60,8 @@ class HybridSearchEngine:
                 vector_query,
                 top_k=top_k * 2,
                 query_vec=query_vec,
-                tenant_id=tenant_id
+                tenant_id=tenant_id,
+                active_scopes=active_scopes,
             )
             for r in records:
                 vector_results.append({
@@ -97,13 +76,18 @@ class HybridSearchEngine:
                 CALL db.index.vector.queryNodes('entity_vector_index', $top_k, $query_vec)
                 YIELD node, score
                 WHERE node.tenant_id = $tenant_id
+                  AND ($active_scopes IS NULL OR EXISTS {
+                      MATCH (node)-[r:FACT]-(:Entity)
+                      WHERE r.scope IN $active_scopes
+                  })
                 RETURN node.id AS id, node.name AS name, score AS vector_score
                 """
                 records, _, _ = self.client.execute_query_with_retry(
                     alt_query,
                     top_k=top_k * 2,
                     query_vec=query_vec,
-                    tenant_id=tenant_id
+                    tenant_id=tenant_id,
+                    active_scopes=active_scopes,
                 )
                 for r in records:
                     vector_results.append({
@@ -117,6 +101,10 @@ class HybridSearchEngine:
                 fallback_query = """
                 MATCH (n:Entity)
                 WHERE n.tenant_id = $tenant_id AND toLower(n.name) CONTAINS toLower($term)
+                  AND ($active_scopes IS NULL OR EXISTS {
+                      MATCH (n)-[r:FACT]-(:Entity)
+                      WHERE r.scope IN $active_scopes
+                  })
                 RETURN n.id AS id, n.name AS name
                 LIMIT $top_k
                 """
@@ -124,6 +112,7 @@ class HybridSearchEngine:
                     records, _, _ = self.client.execute_query_with_retry(
                         fallback_query,
                         tenant_id=tenant_id,
+                        active_scopes=active_scopes,
                         term=query.strip().split()[0] if query.strip() else "",
                         top_k=top_k
                     )
@@ -145,6 +134,10 @@ class HybridSearchEngine:
             CALL db.index.fulltext.queryNodes('entity_name_ft', $lucene_query)
             YIELD node, score
             WHERE node.tenant_id = $tenant_id
+              AND ($active_scopes IS NULL OR EXISTS {
+                  MATCH (node)-[r:FACT]-(:Entity)
+                  WHERE r.scope IN $active_scopes
+              })
             RETURN node.id AS id, node.name AS name, score AS bm25_score
             LIMIT $top_k
             """
@@ -153,6 +146,7 @@ class HybridSearchEngine:
                     fulltext_query,
                     lucene_query=lucene_query,
                     tenant_id=tenant_id,
+                    active_scopes=active_scopes,
                     top_k=top_k * 2
                 )
                 for r in records:
@@ -166,6 +160,126 @@ class HybridSearchEngine:
 
         # 3. Fuse with RRF
         fused = reciprocal_rank_fusion(vector_results, bm25_results, k=60)
+        if not fused:
+            return self.find_semantic_fallback_seeds(
+                query=query,
+                tenant_id=tenant_id,
+                active_scopes=active_scopes,
+                top_k=top_k,
+            )
         return fused[:top_k]
+
+    def find_semantic_fallback_seeds(
+        self,
+        query: str,
+        tenant_id: str = "default",
+        active_scopes: Optional[List[str]] = None,
+        top_k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Semantic Seed Fallback: When find_seed_entities() returns 0 seeds
+        (because query has zero lexical overlap with entity names), falls back
+        to vector similarity search over stored fact/entity embeddings in the
+        active scope to select top-k seed entities.
+        """
+        if not query or not query.strip():
+            return []
+
+        query_vec = embedding_service.embed_query(query)
+        seeds_by_id: Dict[str, Dict[str, Any]] = {}
+
+        # 1. Cosine similarity over Entity embeddings in active scope
+        entity_cypher = """
+        MATCH (e:Entity)-[r:FACT]-(:Entity)
+        WHERE e.tenant_id = $tenant_id
+          AND ($active_scopes IS NULL OR r.scope IN $active_scopes)
+          AND e.embedding IS NOT NULL
+        WITH DISTINCT e, vector.similarity.cosine(e.embedding, $query_vec) AS score
+        ORDER BY score DESC
+        RETURN e.id AS id, e.name AS name, score
+        LIMIT $top_k
+        """
+        try:
+            if hasattr(self.client, "execute_query_with_retry"):
+                records, _, _ = self.client.execute_query_with_retry(
+                    entity_cypher,
+                    tenant_id=tenant_id,
+                    active_scopes=active_scopes,
+                    query_vec=query_vec,
+                    top_k=top_k * 2,
+                )
+            elif getattr(self.client, "driver", None):
+                records, _, _ = self.client.driver.execute_query(
+                    entity_cypher,
+                    tenant_id=tenant_id,
+                    active_scopes=active_scopes,
+                    query_vec=query_vec,
+                    top_k=top_k * 2,
+                )
+            else:
+                records = []
+
+            for r in records:
+                e_id = r["id"]
+                score = float(r["score"])
+                seeds_by_id[e_id] = {
+                    "id": e_id,
+                    "name": r["name"],
+                    "score": score,
+                    "fallback": True,
+                }
+        except Exception as exc:
+            logger.debug("Entity semantic seed fallback failed: %s", exc)
+
+        # 2. Cosine similarity over Fact embeddings in active scope
+        fact_cypher = """
+        MATCH (s:Entity)-[r:FACT]->(o:Entity)
+        WHERE r.tenant_id = $tenant_id
+          AND ($active_scopes IS NULL OR r.scope IN $active_scopes)
+          AND r.embedding IS NOT NULL
+        WITH s, o, vector.similarity.cosine(r.embedding, $query_vec) AS score
+        ORDER BY score DESC
+        UNWIND [s, o] AS node
+        RETURN DISTINCT node.id AS id, node.name AS name, max(score) AS score
+        ORDER BY score DESC
+        LIMIT $top_k
+        """
+        try:
+            if hasattr(self.client, "execute_query_with_retry"):
+                records, _, _ = self.client.execute_query_with_retry(
+                    fact_cypher,
+                    tenant_id=tenant_id,
+                    active_scopes=active_scopes,
+                    query_vec=query_vec,
+                    top_k=top_k * 2,
+                )
+            elif getattr(self.client, "driver", None):
+                records, _, _ = self.client.driver.execute_query(
+                    fact_cypher,
+                    tenant_id=tenant_id,
+                    active_scopes=active_scopes,
+                    query_vec=query_vec,
+                    top_k=top_k * 2,
+                )
+            else:
+                records = []
+
+            for r in records:
+                e_id = r["id"]
+                score = float(r["score"])
+                if e_id in seeds_by_id:
+                    seeds_by_id[e_id]["score"] = max(seeds_by_id[e_id]["score"], score)
+                else:
+                    seeds_by_id[e_id] = {
+                        "id": e_id,
+                        "name": r["name"],
+                        "score": score,
+                        "fallback": True,
+                    }
+        except Exception as exc:
+            logger.debug("Fact semantic seed fallback failed: %s", exc)
+
+        sorted_seeds = sorted(seeds_by_id.values(), key=lambda x: x["score"], reverse=True)
+        return sorted_seeds[:top_k]
 
 hybrid_search_engine = HybridSearchEngine()

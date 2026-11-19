@@ -11,7 +11,7 @@ from kryptodb.core.observability import tracer
 from kryptodb.core.retrieval.hybrid_search import HybridSearchEngine, hybrid_search_engine
 from kryptodb.core.retrieval.traversal import MultiHopTraverser, multihop_traverser
 from kryptodb.core.retrieval.ranking import AttributedMemoryResult, PathReranker, path_reranker
-from kryptodb.storage.neo4j_client import neo4j_client
+from kryptodb.infrastructure.neo4j.client import neo4j_client
 
 logger = logging.getLogger("kryptodb.core.retrieval.service")
 
@@ -77,13 +77,42 @@ class RetrievalService:
             seeds = self.hybrid_engine.find_seed_entities(
                 query=query,
                 tenant_id=tenant_id,
+                active_scopes=active_scopes,
                 top_k=5,
             )
+            is_semantic_fallback = False
+            if not seeds:
+                logger.info("Zero seeds found from lexical/entity search; falling back to semantic vector similarity search over scope %s", active_scopes)
+                seeds = self.hybrid_engine.find_semantic_fallback_seeds(
+                    query=query,
+                    tenant_id=tenant_id,
+                    active_scopes=active_scopes,
+                    top_k=5,
+                )
+                is_semantic_fallback = bool(seeds)
+            elif any(s.get("fallback") for s in seeds):
+                is_semantic_fallback = True
+
         if not seeds:
             logger.debug("No seed entities found for query: %s", query)
             return []
 
         seed_ids = [s["id"] for s in seeds]
+        seed_names = [s.get("name") for s in seeds if s.get("name")]
+
+        # Lightweight temporal intent check for retrospective queries
+        retrospective_patterns = [
+            r"\bbefore\b",
+            r"\bpreviously\b",
+            r"\bused to\b",
+            r"\bprior\b",
+            r"\bhistory\b",
+            r"\bhistorical\b",
+            r"\bearlier\b",
+            r"\bpast\b",
+            r"\bformerly\b",
+        ]
+        is_retrospective = any(re.search(pat, query, re.IGNORECASE) for pat in retrospective_patterns)
 
         # 2. Stratified 1-hop & 2-hop traversal with cycle control
         with tracer.start_as_current_span("retrieval.multihop_traversal"):
@@ -97,6 +126,46 @@ class RetrievalService:
                 max_2hop=max_2hop,
                 now=dt_now,
             )
+
+            # Temporal Routing: When query is retrospective, include superseded edges with temporal annotations
+            if is_retrospective:
+                retrospective_paths = self._fetch_retrospective_edges(
+                    seed_ids=seed_ids,
+                    seed_names=seed_names,
+                    tenant_id=tenant_id,
+                    active_scopes=active_scopes,
+                    limit=max_1hop,
+                )
+                if retrospective_paths:
+                    for p in candidate_paths:
+                        if not p["summary"].startswith("[status:"):
+                            p["summary"] = f"[status: active] {p['summary']}"
+                    retro_edge_ids = {
+                        rp["path_edges"][0]["edge_id"] for rp in retrospective_paths if rp.get("path_edges")
+                    }
+                    candidate_paths = retrospective_paths + [
+                        p for p in candidate_paths
+                        if not any(e.get("edge_id") in retro_edge_ids for e in p.get("path_edges", []))
+                    ]
+
+        if not candidate_paths and not is_semantic_fallback:
+            fallback_seeds = self.hybrid_engine.find_semantic_fallback_seeds(
+                query=query,
+                tenant_id=tenant_id,
+                active_scopes=active_scopes,
+                top_k=5,
+            )
+            if fallback_seeds:
+                is_semantic_fallback = True
+                fb_seed_ids = [s["id"] for s in fallback_seeds]
+                candidate_paths = self.traverser.traverse_from_seeds(
+                    seed_entity_ids=fb_seed_ids,
+                    tenant_id=tenant_id,
+                    active_scopes=active_scopes,
+                    max_1hop=max_1hop,
+                    max_2hop=max_2hop,
+                    now=dt_now,
+                )
 
         if not candidate_paths:
             return []
@@ -123,7 +192,7 @@ class RetrievalService:
                 query=query,
                 paths=clean_paths,
                 top_k=effective_cap * 2,
-                min_relevance_cutoff=effective_cutoff,
+                min_relevance_cutoff=0.0 if (is_retrospective or is_semantic_fallback) else effective_cutoff,
                 now=dt_now,
             )
 
@@ -136,7 +205,145 @@ class RetrievalService:
                 seen_summaries.add(norm)
                 deduped.append(r)
 
+        if not deduped and not is_semantic_fallback:
+            fallback_seeds = self.hybrid_engine.find_semantic_fallback_seeds(
+                query=query,
+                tenant_id=tenant_id,
+                active_scopes=active_scopes,
+                top_k=5,
+            )
+            if fallback_seeds:
+                fb_seed_ids = [s["id"] for s in fallback_seeds]
+                fb_paths = self.traverser.traverse_from_seeds(
+                    seed_entity_ids=fb_seed_ids,
+                    tenant_id=tenant_id,
+                    active_scopes=active_scopes,
+                    max_1hop=max_1hop,
+                    max_2hop=max_2hop,
+                    now=dt_now,
+                )
+                if fb_paths:
+                    fb_clean = [
+                        p for p in fb_paths
+                        if not any(
+                            e.get("predicate") in ("QUERY", "PROCESSED_QUERY", "PROCESSED_MESSAGE")
+                            or str(e.get("target")).startswith("scope:")
+                            or str(e.get("target")).lower() in ("value", "object", "none", "null", "undefined")
+                            for e in p.get("path_edges", [])
+                        )
+                    ]
+                    if fb_clean:
+                        fb_ranked = self.reranker.rank_paths(
+                            query=query,
+                            paths=fb_clean,
+                            top_k=effective_cap * 2,
+                            min_relevance_cutoff=0.0,
+                            now=dt_now,
+                        )
+                        for r in fb_ranked:
+                            norm = " ".join(r.summary.strip().casefold().split())
+                            if norm not in seen_summaries:
+                                seen_summaries.add(norm)
+                                deduped.append(r)
+
         return deduped[:effective_cap]
+
+    def _fetch_retrospective_edges(
+        self,
+        seed_ids: List[str],
+        seed_names: List[str],
+        tenant_id: str,
+        active_scopes: Optional[List[str]],
+        limit: int = 15,
+    ) -> List[Dict[str, Any]]:
+        """Queries for superseded and active facts with temporal validity bounds for retrospective queries."""
+        if not getattr(self.client, "driver", None) and not hasattr(self.client, "execute_query_with_retry"):
+            return []
+
+        retro_query = """
+        MATCH (s:Entity)-[e:FACT]-(t:Entity)
+        WHERE (s.id IN $seed_ids OR s.name IN $seed_ids OR s.name IN $seed_names OR
+               t.id IN $seed_ids OR t.name IN $seed_ids OR t.name IN $seed_names)
+          AND e.tenant_id = $tenant_id
+          AND e.status IN ['active', 'superseded']
+          AND ($active_scopes IS NULL OR e.scope IN $active_scopes)
+        RETURN startNode(e).id AS s_id, startNode(e).name AS s_name,
+               endNode(e).id AS t_id, endNode(e).name AS t_name,
+               e.id AS edge_id, e.predicate AS predicate,
+               e.description AS description, e.confidence AS confidence,
+               e.trust_weight AS trust_weight, e.scope AS scope,
+               e.status AS status, e.valid_from AS valid_from, e.valid_until AS valid_until,
+               e.created_at AS created_at
+        ORDER BY (CASE WHEN e.status = 'superseded' THEN 1 ELSE 0 END) DESC, e.created_at DESC
+        LIMIT $limit
+        """
+        try:
+            params = {
+                "seed_ids": seed_ids,
+                "seed_names": seed_names,
+                "tenant_id": tenant_id,
+                "active_scopes": active_scopes,
+                "limit": limit,
+            }
+            if hasattr(self.client, "execute_query_with_retry"):
+                records, _, _ = self.client.execute_query_with_retry(retro_query, **params)
+            else:
+                records, _, _ = self.client.driver.execute_query(retro_query, **params)
+
+            def _fmt_date(val: Any) -> str:
+                if not val:
+                    return ""
+                if isinstance(val, datetime):
+                    return val.strftime("%Y-%m-%d")
+                s = str(val)
+                if "T" in s:
+                    return s.split("T")[0]
+                return s[:10]
+
+            paths = []
+            for r in records:
+                s_name = r.get("s_name") or ""
+                t_name = r.get("t_name") or ""
+                pred = r.get("predicate") or ""
+                status = r.get("status") or "active"
+                vf = _fmt_date(r.get("valid_from"))
+                vu = _fmt_date(r.get("valid_until"))
+
+                if status == "superseded" and vu:
+                    annot = f"[status: superseded, valid_from: {vf}, valid_until: {vu}]"
+                elif status == "superseded":
+                    annot = f"[status: superseded, valid_from: {vf}]"
+                else:
+                    annot = f"[status: active, valid_from: {vf}]"
+
+                paths.append({
+                    "hops": 1,
+                    "source_id": r.get("s_id"),
+                    "source_name": s_name,
+                    "target_id": r.get("t_id"),
+                    "target_name": t_name,
+                    "summary": f"{annot} {s_name} {pred} {t_name}",
+                    "confidence": float(r.get("confidence") or 1.0),
+                    "trust_weight": float(r.get("trust_weight") or 1.0),
+                    "created_at": r.get("created_at"),
+                    "path_edges": [{
+                        "hop": 1,
+                        "source": s_name,
+                        "predicate": pred,
+                        "target": t_name,
+                        "edge_id": r.get("edge_id"),
+                        "description": r.get("description"),
+                        "scope": r.get("scope", "default"),
+                        "confidence": float(r.get("confidence") or 1.0),
+                        "status": status,
+                        "valid_from": r.get("valid_from"),
+                        "valid_until": r.get("valid_until"),
+                    }],
+                })
+            return paths
+        except Exception as exc:
+            logger.warning("Error fetching retrospective edges: %s", exc)
+            return []
 
 
 retrieval_service = RetrievalService()

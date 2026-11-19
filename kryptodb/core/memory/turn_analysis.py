@@ -111,17 +111,17 @@ Your job is to read the latest user message in the context of recent turns and a
 RULES:
 1. SPLIT MIXED MESSAGES:
    A single message may contain statements, opinions, corrections, temporal updates, and commands. You must split them into distinct, non-overlapping segments.
-   - STATEMENT: Factual disclosures about the world, systems, or people ("Harshit lives in India", "Project Titan uses PostgreSQL 16").
+   - STATEMENT: Factual disclosures about the world, systems, or people ("Alice lives in Berlin", "Apollo Service uses Redis 7").
    - PREFERENCE: Expressed likes, dislikes, favorite items, dietary rules ("I like espresso", "He enjoys reading").
    - OPINION: Subjective assessments or value judgments ("he is very interesting person", "that movie is great").
-   - QUESTION: Requests for information, inquiries, queries, or requests to synthesize/summarize/compare stored knowledge ("what does he like in food?", "where is my key?", "generate a summary of Project Titan", "compare the trade-offs between Raft and Paxos").
+   - QUESTION: Requests for information, inquiries, queries, or requests to synthesize/summarize/compare stored knowledge ("what does he like to read?", "where is my key?", "generate a summary of Apollo Service", "compare the trade-offs between Raft and Paxos").
    - COMMAND: Operational directives to the system ("confirm you've logged these details", "stop", "pause").
    - CHITCHAT: Greetings, pleasantries, small talk, gratitude ("hello", "thanks", "bye").
    - HYPOTHETICAL: Speculative or hedged statements ("I might try vegan food tomorrow", "maybe we should go").
-   - CORRECTION: Updates, overrides, or corrections to existing facts ("migrate the database to CockroachDB instead", "actually, she is the lead").
-   - TEMPORAL_MODIFICATION: Date or timeline adjustments ("push the production cutover back by 10 days", "reschedule to Dec 1").
+   - CORRECTION: Updates, overrides, or corrections to existing facts ("migrate the cache to Memcached instead", "actually, she is the lead").
+   - TEMPORAL_MODIFICATION: Date or timeline adjustments ("push the launch back by 10 days", "reschedule to Dec 1").
    - RETRACTION: Directives to delete, revoke, or forget prior memory ("forget my old address", "do not remember that").
-   - PLANNED_ACTION: Planned future migrations, roadmaps, or scheduled tasks ("we plan to migrate to CockroachDB next quarter").
+   - PLANNED_ACTION: Planned future migrations, roadmaps, or scheduled tasks ("we plan to migrate to ScyllaDB next quarter").
 
 2. DURABILITY POLICY:
    - Factual disclosures, project parameters, technical configurations, specifications, architecture decisions, team roles, requirements, user preferences, corrections, temporal modifications, and planned actions MUST have durable=true.
@@ -137,8 +137,8 @@ RULES:
 
 3. PRONOUN & COREFERENCE RESOLUTION:
    - Inspect recent turns and the focus entity to resolve pronouns ("he", "she", "they", "it").
-   - If "he" refers to a person mentioned in recent turns (e.g. "Harshit Kandpal"), resolve it:
-     surface="he", resolved_to="Harshit Kandpal", resolution="coreference".
+   - If "he" refers to a person mentioned in recent turns (e.g. "Bob Smith"), resolve it:
+     surface="he", resolved_to="Bob Smith", resolution="coreference".
    - If a pronoun has no clear antecedent in context, mark it:
      surface="he", resolved_to=null, resolution="unresolved".
    - NEVER invent or guess an antecedent if none was mentioned.
@@ -146,12 +146,12 @@ RULES:
 4. RETRIEVAL PLANNING:
    - retrieval_needed is FALSE for pure statements with no questions, pure greetings, gratitude, or purely operational commands.
    - retrieval_needed is TRUE whenever there is a QUESTION or request seeking stored information or synthesis of prior context (e.g. summaries, reports, sign-offs, comparisons).
-   - retrieval_query MUST be a rewritten, self-contained search query with all pronouns replaced by the canonical entity name (e.g. "what does Harshit Kandpal like in food", "Project Titan parameters").
+   - retrieval_query MUST be a rewritten, self-contained search query with all pronouns replaced by the canonical entity name (e.g. "what does Bob Smith like to read", "Apollo Service parameters").
    - If retrieval_needed is false, retrieval_query should be null.
 
 5. VERBATIM QUOTES:
    - Each segment's `text` MUST be an exact span from the user message. Do not alter the user's words in segment.text.
-   - Tolerate typos in entities (e.g. "lfx entee" -> resolved entity or normalized meaning in the query).
+   - Tolerate typos in entities (e.g. "softwre engneer" -> normalized meaning in the query).
 
 Return STRICT JSON matching the TurnAnalysisResult schema.
 """
@@ -293,8 +293,7 @@ class LLMTurnAnalyzer:
                 logger.warning("Prompt-based LLM turn analysis failed: %s", exc)
 
         # Deterministic rule-based fallback when LLM is unavailable
-        fake = FakeTurnAnalyzer()
-        return fake.analyze_turn(clean_text, conversation_history, focus_entity)
+        return self._heuristic_analyze_turn(clean_text, conversation_history, focus_entity)
 
     def _enforce_safety_rules(self, result: TurnAnalysisResult, original_text: str) -> TurnAnalysisResult:
         """Code-level safety enforcement guarding against LLM policy leakage."""
@@ -333,10 +332,7 @@ class LLMTurnAnalyzer:
         if is_synthesis:
             result.retrieval_needed = True
             if not result.retrieval_query:
-                if "project titan" in lowered or "titan" in lowered:
-                    result.retrieval_query = "Project Titan"
-                else:
-                    result.retrieval_query = original_text.strip()
+                result.retrieval_query = original_text.strip()
             for seg in result.segments:
                 if re.search(r"\b(generate|summarize|sign-off|compare)\b", seg.text, re.IGNORECASE):
                     seg.type = SegmentType.QUESTION
@@ -348,124 +344,46 @@ class LLMTurnAnalyzer:
 
         return result
 
-
-class FakeTurnAnalyzer:
-    """Deterministic test double providing predictable turn analysis for regression testing."""
-
-    def __init__(self, fixture_overrides: Optional[Dict[str, TurnAnalysisResult]] = None):
-        self.fixture_overrides = fixture_overrides or {}
-
-    def analyze_turn(
+    def _heuristic_analyze_turn(
         self,
-        latest_message: str,
+        clean_text: str,
         conversation_history: Optional[List[Any]] = None,
         focus_entity: Optional[str] = None,
     ) -> TurnAnalysisResult:
-        clean = latest_message.strip()
-
-        # Check explicit fixture overrides
-        if clean in self.fixture_overrides:
-            return self.fixture_overrides[clean]
-
-        lowered = clean.lower()
-
-        # 1. Chitchat
-        if lowered in ("hi", "hello", "hey", "howdy", "greetings", "thanks", "thank you", "bye", "good morning", "good evening", "good afternoon") or lowered.startswith("good morning"):
+        lowered = clean_text.lower()
+        if lowered in ("hi", "hello", "hey", "howdy", "greetings", "thanks", "thank you", "bye") or lowered.startswith("good morning"):
             return TurnAnalysisResult(
-                segments=[
-                    AnalyzedSegment(
-                        text=clean,
-                        type=SegmentType.CHITCHAT,
-                        durable=False,
-                        temporary=False,
-                    )
-                ],
+                segments=[AnalyzedSegment(text=clean_text, type=SegmentType.CHITCHAT, durable=False)],
                 mentioned_entities=[],
                 retrieval_needed=False,
                 retrieval_query=None,
             )
 
-        # 2. Key regression fixture: "harshit kandpal lives in india and he is very interesting person, lfx entee too . also what does he like in food?"
-        if "harshit kandpal lives in india" in lowered and "what does he like in food" in lowered:
-            return TurnAnalysisResult(
-                segments=[
-                    AnalyzedSegment(
-                        text="harshit kandpal lives in india",
-                        type=SegmentType.STATEMENT,
-                        durable=True,
-                        temporary=False,
-                    ),
-                    AnalyzedSegment(
-                        text="he is very interesting person",
-                        type=SegmentType.OPINION,
-                        durable=False,
-                        temporary=False,
-                    ),
-                    AnalyzedSegment(
-                        text="lfx entee too",
-                        type=SegmentType.STATEMENT,
-                        durable=True,
-                        temporary=False,
-                    ),
-                    AnalyzedSegment(
-                        text="also what does he like in food?",
-                        type=SegmentType.QUESTION,
-                        durable=False,
-                        temporary=False,
-                    ),
-                ],
-                mentioned_entities=[
-                    MentionedEntity(
-                        surface="harshit kandpal",
-                        resolved_to="Harshit Kandpal",
-                        kind="PERSON",
-                        resolution=EntityResolution.EXPLICIT,
-                    ),
-                    MentionedEntity(
-                        surface="he",
-                        resolved_to="Harshit Kandpal",
-                        kind="PERSON",
-                        resolution=EntityResolution.COREFERENCE,
-                    ),
-                ],
-                retrieval_needed=True,
-                retrieval_query="what does Harshit Kandpal like in food",
-            )
-
         question_starters = ("what", "where", "who", "when", "why", "how", "tell me", "explain", "does", "do", "can", "compare", "generate", "summarize")
-        command_starters = ("confirm", "please confirm", "forget", "clear", "stop", "delete", "make sure", "keep", "keep everything", "constraint")
-        raw_sentences = [s.strip() for s in re.split(r'(?<=[.?!])\s+', clean) if s.strip()]
+        command_starters = ("confirm", "please confirm", "forget", "clear", "stop", "delete", "make sure", "keep")
+        raw_sentences = [s.strip() for s in re.split(r'(?<=[.?!])\s+', clean_text) if s.strip()]
+
         if len(raw_sentences) > 1:
             segs = []
             ret_query = None
             for sent in raw_sentences:
                 s_low = sent.lower()
-                is_q = sent.endswith("?") or any(s_low.startswith(q) for q in question_starters) or "summary" in s_low or "sign-off" in s_low or "question" in s_low or "compare" in s_low
-                is_retract = "forget" in s_low or "delete" in s_low or "retract" in s_low
+                is_q = sent.endswith("?") or any(s_low.startswith(q) for q in question_starters)
+                is_retract = any(w in s_low for w in ("forget", "delete", "retract"))
                 is_cmd = any(s_low.startswith(c) for c in command_starters)
-                is_temporal = any(w in s_low for w in ("push the", "delay", "reschedule", "postpone", "cutover back", "by 10 days", "back by"))
-                is_correction = any(w in s_low for w in ("had to migrate", "migrate the", "instead", "actually", "update on"))
-                
+
                 if is_q:
                     segs.append(AnalyzedSegment(text=sent, type=SegmentType.QUESTION, durable=False))
                     if not ret_query:
-                        if "project titan" in lowered:
-                            ret_query = "Project Titan"
-                        else:
-                            ret_query = sent.rstrip("?").strip()
+                        ret_query = sent.rstrip("?").strip()
                 elif is_retract:
                     segs.append(AnalyzedSegment(text=sent, type=SegmentType.RETRACTION, durable=False))
                 elif is_cmd:
                     segs.append(AnalyzedSegment(text=sent, type=SegmentType.COMMAND, durable=False))
-                elif is_temporal:
-                    segs.append(AnalyzedSegment(text=sent, type=SegmentType.TEMPORAL_MODIFICATION, durable=True))
-                elif is_correction:
-                    segs.append(AnalyzedSegment(text=sent, type=SegmentType.CORRECTION, durable=True))
                 else:
                     segs.append(AnalyzedSegment(text=sent, type=SegmentType.STATEMENT, durable=True))
 
             has_q = any(s.type == SegmentType.QUESTION for s in segs)
-            has_stmt = any(s.durable for s in segs)
             return TurnAnalysisResult(
                 segments=segs,
                 mentioned_entities=[],
@@ -473,17 +391,9 @@ class FakeTurnAnalyzer:
                 retrieval_query=ret_query if has_q else None,
             )
 
-        # Single command / retraction check
-        if any(lowered.startswith(w) for w in ("forget", "delete", "retract", "remove", "clear")) or "forget that" in lowered or "forget my" in lowered:
+        if any(lowered.startswith(w) for w in ("forget", "delete", "retract", "remove", "clear")):
             return TurnAnalysisResult(
-                segments=[
-                    AnalyzedSegment(
-                        text=clean,
-                        type=SegmentType.RETRACTION,
-                        durable=False,
-                        temporary=False,
-                    )
-                ],
+                segments=[AnalyzedSegment(text=clean_text, type=SegmentType.RETRACTION, durable=False)],
                 mentioned_entities=[],
                 retrieval_needed=False,
                 retrieval_query=None,
@@ -491,100 +401,35 @@ class FakeTurnAnalyzer:
 
         if any(lowered.startswith(w) for w in ("confirm", "please confirm", "stop")):
             return TurnAnalysisResult(
-                segments=[
-                    AnalyzedSegment(
-                        text=clean,
-                        type=SegmentType.COMMAND,
-                        durable=False,
-                        temporary=False,
-                    )
-                ],
+                segments=[AnalyzedSegment(text=clean_text, type=SegmentType.COMMAND, durable=False)],
                 mentioned_entities=[],
                 retrieval_needed=False,
                 retrieval_query=None,
             )
 
-        # 3. Pronoun resolution check: "he is an engineer" or "what does he like"
-        antecedent = focus_entity
-        if not antecedent and conversation_history:
-            for m in reversed(conversation_history):
-                content = str(m.content if hasattr(m, "content") else (m.get("content") if isinstance(m, dict) else ""))
-                if "harshit" in content.lower():
-                    antecedent = "Harshit Kandpal"
-                    break
-                elif "alice" in content.lower():
-                    antecedent = "Alice"
-                    break
-
-        # Check for hypothetical
-        is_hypothetical = any(w in lowered for w in ("might try", "maybe i", "could try", "thinking about trying"))
-
-        # Pure Question check
-        question_starters = ("what", "where", "who", "when", "why", "how", "tell me", "explain", "does", "do", "can", "compare", "generate", "summarize")
-        is_question = clean.endswith("?") or any(lowered.startswith(q) for q in question_starters)
-
+        is_question = clean_text.endswith("?") or any(lowered.startswith(q) for q in question_starters)
         if is_question:
-            # Check pronoun replacement in query
-            resolved_query = clean
-            entities = []
-            if " he " in f" {lowered} " or lowered.startswith("he "):
-                if antecedent:
-                    resolved_query = re.sub(r"\bhe\b", antecedent, clean, flags=re.IGNORECASE)
-                    entities.append(
-                        MentionedEntity(surface="he", resolved_to=antecedent, kind="PERSON", resolution=EntityResolution.COREFERENCE)
-                    )
-                else:
-                    entities.append(
-                        MentionedEntity(surface="he", resolved_to=None, kind="PERSON", resolution=EntityResolution.UNRESOLVED)
-                    )
-            elif "harshit" in lowered:
-                entities.append(MentionedEntity(surface="harshit", resolved_to="Harshit Kandpal", kind="PERSON", resolution=EntityResolution.EXPLICIT))
-            elif "harshi" in lowered:
-                entities.append(MentionedEntity(surface="harshi", resolved_to="Harshi", kind="PERSON", resolution=EntityResolution.EXPLICIT))
-
             return TurnAnalysisResult(
-                segments=[
-                    AnalyzedSegment(
-                        text=clean,
-                        type=SegmentType.QUESTION,
-                        durable=False,
-                        temporary=False,
-                    )
-                ],
-                mentioned_entities=entities,
+                segments=[AnalyzedSegment(text=clean_text, type=SegmentType.QUESTION, durable=False)],
+                mentioned_entities=[],
                 retrieval_needed=True,
-                retrieval_query=resolved_query.rstrip("?").strip(),
+                retrieval_query=clean_text.rstrip("?").strip(),
             )
 
-        # Pure Statement / Preference
-        is_pref = any(w in lowered for w in ("likes", "loves", "prefers", "dislikes", "favorite"))
-        seg_type = SegmentType.HYPOTHETICAL if is_hypothetical else (SegmentType.PREFERENCE if is_pref else SegmentType.STATEMENT)
-        durable = not is_hypothetical
-
-        entities = []
-        if re.search(r"\bhe\b", lowered):
-            if antecedent:
-                entities.append(MentionedEntity(surface="he", resolved_to=antecedent, kind="PERSON", resolution=EntityResolution.COREFERENCE))
-            else:
-                entities.append(MentionedEntity(surface="he", resolved_to=None, kind="PERSON", resolution=EntityResolution.UNRESOLVED))
-                durable = False  # Unresolved pronoun cannot be durable!
-
-        retrieval_needed = lowered.startswith("store fact:")
-        retrieval_query = clean if retrieval_needed else None
-
         return TurnAnalysisResult(
-            segments=[
-                AnalyzedSegment(
-                    text=clean,
-                    type=seg_type,
-                    durable=durable,
-                    temporary=False,
-                )
-            ],
-            mentioned_entities=entities,
-            retrieval_needed=retrieval_needed,
-            retrieval_query=retrieval_query,
+            segments=[AnalyzedSegment(text=clean_text, type=SegmentType.STATEMENT, durable=True)],
+            mentioned_entities=[],
+            retrieval_needed=lowered.startswith("store fact:"),
+            retrieval_query=clean_text if lowered.startswith("store fact:") else None,
         )
+
+
+def __getattr__(name: str):
+    if name == "FakeTurnAnalyzer":
+        from tests.fakes import FakeTurnAnalyzer
+        return FakeTurnAnalyzer
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 
 turn_analyzer = LLMTurnAnalyzer()

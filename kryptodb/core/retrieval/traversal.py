@@ -73,13 +73,16 @@ class MultiHopTraverser:
                 )
 
             for r in records_1hop:
+                desc = r.get("description")
+                base_sum = f"{r['s_name']} {r['predicate']} {r['t_name']}"
+                desc_suff = f": {desc}" if desc and desc.strip() and desc.strip().lower() != base_sum.lower() else ""
                 paths.append({
                     "hops": 1,
                     "source_id": r["s_id"],
                     "source_name": r["s_name"],
                     "target_id": r["t_id"],
                     "target_name": r["t_name"],
-                    "summary": f"{r['s_name']} {r['predicate']} {r['t_name']}",
+                    "summary": f"{base_sum}{desc_suff}",
                     "confidence": float(r["confidence"] or 1.0),
                     "trust_weight": float(r["trust_weight"] or 1.0),
                     "created_at": r["created_at"],

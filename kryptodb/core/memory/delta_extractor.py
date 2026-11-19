@@ -56,10 +56,9 @@ def resolve_scope_for_content(
         return default_scope
 
     lower_c = content.lower()
-    if "titan" in lower_c:
-        return "PROJECT:titan"
-    if "research" in lower_c:
-        return "research"
+    proj_match = re.search(r"\bproject\s+([a-zA-Z0-9_-]+)\b", lower_c)
+    if proj_match:
+        return f"PROJECT:{proj_match.group(1).lower()}"
 
     if allowed_scopes:
         for s in allowed_scopes:
@@ -175,6 +174,7 @@ def extract_facts_from_messages(
     agent_id: str = "agent-1",
     user_scope: str = "AUTO",
     target_text: Optional[str] = None,
+    recent_history: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Extracts structured FactItem objects from user factual statements."""
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -207,20 +207,41 @@ def extract_facts_from_messages(
             structured_llm = llm.with_structured_output(FactExtractionPatch)
             sys_msg = SystemMessage(
                 content=(
-                    "Extract durable facts, configurations, relationships, parameters, and preferences from the text into standard (Subject, Predicate, Object) triples.\n"
+                    "Extract durable factual statements, configurations, relationships, parameters, and properties from the text into standard (Subject, Predicate, Object) triples.\n"
                     "RULES:\n"
-                    "- Subject must be the entity, project, or person (e.g. 'Project Titan', 'Elena Rostova', 'Harshit Kandpal').\n"
-                    "- Predicate MUST be a short relational verb in UPPERCASE (e.g. 'LEAD_ARCHITECT', 'DEPLOYED_ON', 'USES', 'HAS_SLA', 'PRODUCTION_CUTOVER_DATE', 'WORKS_FOR', 'IS_A', 'LIVES_IN', 'LIKES').\n"
-                    "- Object MUST be the specific entity, value, or target (e.g. 'Elena Rostova', 'AWS us-east-1', 'PostgreSQL 16', 'under 45ms', 'November 14', 'India'). Never put 'yes', 'Object', or 'value' as object!\n"
-                    "- Quote must be an exact verbatim substring of the user's message.\n"
+                    "- Subject: The primary entity, actor, or component explicitly mentioned in the text (e.g. 'EntityA', 'ServiceAlpha', 'PersonX').\n"
+                    "- Predicate: A concise, canonical relation name in UPPERCASE SNAKE_CASE describing the relationship (e.g. 'DEPENDS_ON', 'MAINTAINS', 'AUTHENTICATES_VIA', 'APPROVED', 'RUNS', 'REPORTS_TO').\n"
+                    "- Object: The specific target entity, property, attribute, or value directly mentioned in the text (e.g. 'EntityB', 'ComponentY', 'Version1.0'). Never use placeholders like 'value', 'Object', or 'none'.\n"
+                    "- Quote: An exact verbatim substring of the user's message providing direct evidence for the triple.\n"
+                    "- Compound Clauses: Decompose compound sentences and relative clauses (e.g., 'A depends on B, which connects to C') into separate triples so no clause is dropped.\n"
+                    "- Co-Reference & Entity Normalization: When prior conversation context is provided, resolve pronouns ('She', 'He', 'It', 'They') and title aliases ('Dr. Smith' -> 'Jane Smith') to their canonical full entity names established in prior turns. Normalize equivalent entity mentions to the established subject name from prior turns (e.g. 'auth database' -> 'auth service', or 'payments repo' -> 'payments service' when referring to the same component).\n"
+                    "- Canonical State Predicates: Normalize state-change verbs (such as UPGRADED_TO, MIGRATED_TO, OPERATES, SWITCHED_TO) into canonical state predicates (RUNS or USES).\n"
+                    "- Strictly ground all triples in the text and context: NEVER invent, hallucinate, or copy entities, projects, or values not explicitly present in the text or context.\n"
                     "- Do NOT extract questions, opinions, or hypotheticals."
                 )
             )
-            res = structured_llm.invoke([sys_msg, HumanMessage(content=user_text)])
+            if recent_history:
+                history_lines = "\n".join(f"- {h.strip()}" for h in recent_history if h and h.strip())
+                human_text = (
+                    f"Prior conversation context:\n{history_lines}\n\n"
+                    f"Current statement to extract facts from:\n{user_text}"
+                )
+            else:
+                human_text = user_text
+
+            res = structured_llm.invoke([sys_msg, HumanMessage(content=human_text)])
             facts = res.facts if isinstance(res, FactExtractionPatch) else (res.get("facts", []) if isinstance(res, dict) else [])
             extracted = []
             for r in facts:
                 dumped = r.model_dump() if hasattr(r, "model_dump") else (r if isinstance(r, dict) else {})
+                if dumped.get("subject"):
+                    s = str(dumped["subject"]).strip()
+                    if s.lower().startswith("the "):
+                        dumped["subject"] = s[4:].strip()
+                    elif s.lower().startswith("a "):
+                        dumped["subject"] = s[2:].strip()
+                    elif s.lower().startswith("an "):
+                        dumped["subject"] = s[3:].strip()
                 if dumped.get("predicate"):
                     dumped["predicate"] = predicate_registry.normalize(dumped["predicate"])
                 if not dumped.get("quote"):
@@ -233,36 +254,17 @@ def extract_facts_from_messages(
         except Exception as exc:
             logger.debug("Structured LLM extraction failed: %s", exc)
 
-    extracted_facts = []
-    if "lives in india" in lower_text:
-        subj = "Harshit Kandpal" if "harshit" in lower_text else agent_id
-        extracted_facts.append(FactItem(
-            subject=subj,
-            predicate="LIVES_IN",
-            obj="India",
-            scope=resolve_scope_for_content("India", agent_id=agent_id, default_scope=user_scope),
-            description=f"{subj} LIVES_IN India",
-            quote="lives in india",
-            confidence=1.0,
-        ).model_dump())
-
-    if "lfx entee" in lower_text or "lfx mentee" in lower_text:
-        subj = "Harshit Kandpal" if "harshit" in lower_text or "he" in lower_text else agent_id
-        quote_str = "lfx entee" if "lfx entee" in user_text else ("lfx mentee" if "lfx mentee" in user_text else user_text)
-        extracted_facts.append(FactItem(
-            subject=subj,
-            predicate="IS_A",
-            obj="LFX mentee",
-            scope=resolve_scope_for_content("LFX mentee", agent_id=agent_id, default_scope=user_scope),
-            description=f"{subj} IS_A LFX mentee",
-            quote=quote_str,
-            confidence=1.0,
-        ).model_dump())
-
-    if extracted_facts:
-        return extracted_facts
-
     rel_patterns = [
+        (r"^([A-Za-z0-9_.\s]+?)\s+(?:routes(?: traffic)? to)\s+([A-Za-z0-9_.\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(1).strip(), "ROUTES_TO", m.group(2).strip(), m.group(0).strip())),
+        (r"^([A-Za-z0-9_.\s]+?)\s+(?:connects to|connects with)\s+([A-Za-z0-9_.\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(1).strip(), "CONNECTS_TO", m.group(2).strip(), m.group(0).strip())),
+        (r"^([A-Za-z0-9_.\s]+?)\s+(?:depends on|relies on)\s+([A-Za-z0-9_.\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(1).strip(), "DEPENDS_ON", m.group(2).strip(), m.group(0).strip())),
+        (r"^([A-Za-z0-9_.\s]+?)\s+(?:authenticates via|authenticates with)\s+([A-Za-z0-9_.\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(1).strip(), "AUTHENTICATES_VIA", m.group(2).strip(), m.group(0).strip())),
+        (r"^([A-Za-z0-9_.\s]+?)\s+(?:reports to)\s+([A-Za-z0-9_.\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(1).strip(), "REPORTS_TO", m.group(2).strip(), m.group(0).strip())),
+        (r"^([A-Za-z0-9_.\s]+?)\s+is (?:the )?lead architect of\s+([A-Za-z0-9_.\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(2).strip(), "LEAD_ARCHITECT", m.group(1).strip(), m.group(0).strip())),
+        (r"^([A-Za-z0-9_.\s]+?)\s+(?:now )?leads\s+([A-Za-z0-9_.\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(2).strip(), "LEAD_ARCHITECT", m.group(1).strip(), m.group(0).strip())),
+        (r"^([A-Za-z0-9_.\s]+?)\s+(?:uses|runs on|is running|runs)\s+([A-Za-z0-9_.\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(1).strip(), "RUNS", m.group(2).strip(), m.group(0).strip())),
+        (r"^([A-Za-z0-9_.\s]+?)\s+(?:complies with|certified for)\s+([A-Za-z0-9_\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(1).strip(), "COMPLIES_WITH", m.group(2).strip(), m.group(0).strip())),
+        (r"^([A-Za-z0-9_.\s]+?)\s+(?:enforces|has)\s+(?:an?\s+)?(?:latency\s+)?SLA\s+(?:of\s+|under\s+)?([A-Za-z0-9_\s]+?)(?:(?:\s+and\s+|\s*,\s*|\.|$).*|$)", lambda m: (m.group(1).strip(), "HAS_SLA", m.group(2).strip(), m.group(0).strip())),
         (r"^([A-Za-z0-9_.\s]+?)\s+(?:was infected with|infected with)\s+([A-Za-z0-9_.\s]+?)(?:(?:\s+and\s+|\s*,\s*).*|$)", lambda m: (m.group(1).strip(), "INFECTED_WITH", m.group(2).strip(), m.group(0).strip())),
         (r"^(?:my\s+)?favorite color is\s+([A-Za-z0-9_\s]+?)(?:(?:\s+and\s+|\s*,\s*).*|$)", lambda m: ("User", "FAVORITE_COLOR", m.group(1).strip(), m.group(0).strip())),
         (r"^(?:i am\s+)?(?:looking for|interested in)\s+(?:a|an)?\s*([A-Za-z0-9_\s]+?)(?:(?:\s+and\s+|\s*,\s*).*|$)", lambda m: ("User", "PREFERS", m.group(1).strip(), m.group(0).strip())),
@@ -271,31 +273,47 @@ def extract_facts_from_messages(
         (r"^([A-Za-z0-9_\s]+?)\s+(?:works for|works at|employed by)\s+([A-Za-z0-9_\s]+?)(?:(?:\s+and\s+|\s*,\s*).*|$)", lambda m: (m.group(1).strip().title(), "WORKS_FOR", m.group(2).strip(), m.group(0).strip())),
         (r"^([A-Za-z0-9_\s]+?)\s+is (?:an?)\s+([A-Za-z0-9_\s]+?)(?:(?:\s+and\s+|\s*,\s*).*|$)", lambda m: (m.group(1).strip().title(), "IS_A", m.group(2).strip(), m.group(0).strip())),
         (r"^([A-Za-z0-9_\s]+?)\s+is\s+([A-Za-z0-9_\s]+?)(?:(?:\s+and\s+|\s*,\s*).*|$)", lambda m: (m.group(1).strip().title(), "IS", m.group(2).strip(), m.group(0).strip())),
-        (r"^(?:the\s+)?(?:production\s+)?cutover\s+date\s+is\s+([A-Za-z0-9\s,]+?)(?:(?:\s+and\s+|\s*,\s*|\.|\s*make\b).*|$)", lambda m: ("Project Titan" if "titan" in user_text.lower() else agent_id, "PRODUCTION_CUTOVER_DATE", m.group(1).strip(), m.group(0).strip())),
+        (r"^(?:the\s+)?(?:production\s+)?cutover\s+date\s+is\s+([A-Za-z0-9\s,]+?)(?:(?:\s+and\s+|\s*,\s*|\.|\s*make\b).*|$)", lambda m: (agent_id, "PRODUCTION_CUTOVER_DATE", m.group(1).strip(), m.group(0).strip())),
         (r"^([A-Za-z0-9_.\s]+?)\s+(?:exhibits|manifests|demonstrates)\s+([A-Za-z0-9_\s]+?)(?:(?:\s+and\s+|\s*,\s*).*|$)", lambda m: (m.group(1).strip(), "EXHIBITS", m.group(2).strip(), m.group(0).strip())),
         (r"^([A-Za-z0-9_.\s]+?)\s+has\s+([A-Za-z0-9_\s]+?)(?:(?:\s+and\s+|\s*,\s*).*|$)", lambda m: (m.group(1).strip().title(), "HAS", m.group(2).strip(), m.group(0).strip())),
     ]
 
     clean_text = re.sub(r"^(?:store\s+fact:|fact:|add\s+fact:|remember\s+that|remember:|note\s+that)\s*", "", user_text, flags=re.IGNORECASE).strip()
 
-    for pat, extractor in rel_patterns:
-        m = re.match(pat, user_text, re.IGNORECASE) or re.match(pat, clean_text, re.IGNORECASE)
-        if m:
-            subj, pred, obj, quote_match = extractor(m)
-            if subj.lower() in ("my", "i", "me"):
-                subj = "User"
-            quote = quote_match if quote_match in user_text else (clean_text if clean_text in user_text else user_text)
-            resolved_scope = resolve_scope_for_content(user_text, agent_id=agent_id, default_scope=user_scope)
-            fact = FactItem(
-                subject=subj,
-                predicate=pred,
-                obj=obj,
-                scope=resolved_scope,
-                description=f"{subj} {pred} {obj}",
-                quote=quote,
-                confidence=1.0,
-            )
-            return [fact.model_dump()]
+    clauses = [
+        c.strip() for c in re.split(r"(?<=[.!?;\n])\s+|,\s+which\s+|,\s+and\s+", clean_text)
+        if c.strip() and len(c.strip()) > 3
+    ]
+    if not clauses:
+        clauses = [clean_text]
+
+    extracted_list = []
+    seen_keys = set()
+    for clause in clauses:
+        for pat, extractor in rel_patterns:
+            m = re.match(pat, clause, re.IGNORECASE)
+            if m:
+                subj, pred, obj, quote_match = extractor(m)
+                if subj.lower() in ("my", "i", "me"):
+                    subj = "User"
+                k = (subj.lower(), pred, obj.lower())
+                if k not in seen_keys:
+                    seen_keys.add(k)
+                    quote = quote_match if quote_match in user_text else (clause if clause in user_text else user_text)
+                    resolved_scope = resolve_scope_for_content(clause, agent_id=agent_id, default_scope=user_scope)
+                    fact = FactItem(
+                        subject=subj,
+                        predicate=pred,
+                        obj=obj,
+                        scope=resolved_scope,
+                        description=f"{subj} {pred} {obj}",
+                        quote=quote,
+                        confidence=1.0,
+                    )
+                    extracted_list.append(fact.model_dump())
+                break
+    if extracted_list:
+        return extracted_list
 
     if lower_text.startswith(("store fact:", "fact:", "add fact:", "remember that", "remember:", "note that")):
         raw_fact = user_text.split(":", 1)[1].strip() if ":" in user_text else user_text
@@ -347,6 +365,7 @@ def extract_state_deltas(
     llm: Optional[Any] = None,
     agent_id: str = "agent-1",
     user_scope: str = "AUTO",
+    recent_history: Optional[List[str]] = None,
 ) -> List[ProposedMutation]:
     """Extracts structured state mutations conditioned on prior active entity state.
 
@@ -364,180 +383,8 @@ def extract_state_deltas(
     existing_by_pred: Dict[str, List[Dict[str, Any]]] = {}
     for f in active_facts:
         if isinstance(f, dict):
-            f_subj = str(f.get("subject", "")).strip().casefold()
-            f_obj = str(f.get("object", "")).strip().casefold()
-            # If handling Project Titan, ensure subject is Project Titan and object is the target value
-            if "titan" in lowered:
-                if f_subj != "project titan" and f_obj == "project titan":
-                    normalized_f = dict(f)
-                    normalized_f["subject"] = f.get("object")
-                    normalized_f["object"] = f.get("subject")
-                    f = normalized_f
-                elif f_subj != "project titan":
-                    continue
-
             p = predicate_registry.normalize(f.get("predicate", ""))
             existing_by_pred.setdefault(p, []).append(f)
-
-    # 1. Project Titan dense entity extraction
-    if "project titan" in lowered or any("titan" in str(f.get("subject", "")).lower() for f in active_facts):
-        subject = "Project Titan"
-        scope = "PROJECT:titan" if "PROJECT:titan" in user_scope or user_scope == "AUTO" else user_scope
-        mutations: List[ProposedMutation] = []
-
-        # Turn 1: Dense seeding
-        # "The lead architect is Elena Rostova"
-        arch_match = re.search(r"lead architect is\s+([A-Za-z\s]+?)(?:,|$|\.|\sand\b)", clean_text, re.IGNORECASE)
-        if arch_match:
-            arch_val = arch_match.group(1).strip()
-            mutations.append(ProposedMutation(
-                action=DeltaAction.ADD,
-                subject=subject,
-                predicate="LEAD_ARCHITECT",
-                obj=arch_val,
-                scope=scope,
-                description=f"{subject} LEAD_ARCHITECT {arch_val}",
-                quote=arch_match.group(0).strip(),
-                confidence=1.0,
-            ))
-
-        # "deploying on AWS us-east-1 using PostgreSQL 16"
-        deploy_match = re.search(r"deploying on\s+([A-Za-z0-9\-_\s]+?)\s+using\s+([A-Za-z0-9\.\s]+?)(?:,|$|\.|\sand\b)", clean_text, re.IGNORECASE)
-        if deploy_match:
-            region_val = deploy_match.group(1).strip()
-            db_val = deploy_match.group(2).strip()
-            mutations.append(ProposedMutation(
-                action=DeltaAction.ADD,
-                subject=subject,
-                predicate="DEPLOYED_ON",
-                obj=region_val,
-                scope=scope,
-                description=f"{subject} DEPLOYED_ON {region_val}",
-                quote=deploy_match.group(0).strip(),
-                confidence=1.0,
-            ))
-            mutations.append(ProposedMutation(
-                action=DeltaAction.ADD,
-                subject=subject,
-                predicate="USES",
-                obj=db_val,
-                scope=scope,
-                description=f"{subject} USES {db_val}",
-                quote=deploy_match.group(0).strip(),
-                confidence=1.0,
-            ))
-
-        # "Our strict latency SLA is under 45ms"
-        sla_match = re.search(r"latency SLA is\s+([A-Za-z0-9\<\>\s]+?)(?:,|$|\.|\sand\b)", clean_text, re.IGNORECASE)
-        if sla_match:
-            sla_val = sla_match.group(1).strip()
-            mutations.append(ProposedMutation(
-                action=DeltaAction.ADD,
-                subject=subject,
-                predicate="HAS_SLA",
-                obj=sla_val,
-                scope=scope,
-                description=f"{subject} HAS_SLA {sla_val}",
-                quote=sla_match.group(0).strip(),
-                confidence=1.0,
-            ))
-
-        # "production cutover date is November 14"
-        cutover_match = re.search(r"production cutover date is\s+([A-Za-z0-9\s,]+?)(?:,|$|\.|\sand\b)", clean_text, re.IGNORECASE)
-        if cutover_match:
-            date_val = cutover_match.group(1).strip()
-            mutations.append(ProposedMutation(
-                action=DeltaAction.ADD,
-                subject=subject,
-                predicate="PRODUCTION_CUTOVER_DATE",
-                obj=date_val,
-                scope=scope,
-                description=f"{subject} PRODUCTION_CUTOVER_DATE {date_val}",
-                quote=cutover_match.group(0).strip(),
-                confidence=1.0,
-            ))
-
-        # Turn 2: State Mutation & Conflict Resolution
-        # "we had to migrate the database to CockroachDB"
-        migrate_match = re.search(r"migrate(?:d)? the database to\s+([A-Za-z0-9_\s]+?)(?:\s+due\b|\s+because\b|,|$|\.|\sand\b)", clean_text, re.IGNORECASE)
-        if migrate_match:
-            new_db = migrate_match.group(1).strip()
-            old_db = "PostgreSQL 16"
-            old_fact_id = None
-            if "USES" in existing_by_pred:
-                candidate_db = existing_by_pred["USES"][0].get("object") or existing_by_pred["USES"][0].get("obj", "")
-                if candidate_db and candidate_db.strip().casefold() != "project titan":
-                    old_db = candidate_db
-                old_fact_id = existing_by_pred["USES"][0].get("id") or existing_by_pred["USES"][0].get("edge_id")
-
-            mutations.append(ProposedMutation(
-                action=DeltaAction.SUPERSEDE,
-                subject=subject,
-                predicate="USES",
-                obj=new_db,
-                old_obj=old_db,
-                supersedes_fact_id=old_fact_id,
-                scope=scope,
-                description=f"{subject} USES {new_db} (supersedes {old_db})",
-                quote=migrate_match.group(0).strip(),
-                confidence=1.0,
-            ))
-
-        # "deploying across both us-east-1 and eu-central-1"
-        region_update_match = re.search(r"deploying across (?:both )?([a-z0-9\-]+(?:\s+and\s+[a-z0-9\-]+)+)", clean_text, re.IGNORECASE)
-        if not region_update_match:
-            region_update_match = re.search(r"deploying across (?:both )?([^,\.]*?)(?:\.|\,|$|\salso\b)", clean_text, re.IGNORECASE)
-        if region_update_match:
-            new_regions = region_update_match.group(1).strip()
-            old_region = "AWS us-east-1"
-            old_fact_id = None
-            if "DEPLOYED_ON" in existing_by_pred:
-                candidate_region = existing_by_pred["DEPLOYED_ON"][0].get("object") or existing_by_pred["DEPLOYED_ON"][0].get("obj", "")
-                if candidate_region and candidate_region.strip().casefold() != "project titan":
-                    old_region = candidate_region
-                old_fact_id = existing_by_pred["DEPLOYED_ON"][0].get("id") or existing_by_pred["DEPLOYED_ON"][0].get("edge_id")
-
-            mutations.append(ProposedMutation(
-                action=DeltaAction.SUPERSEDE,
-                subject=subject,
-                predicate="DEPLOYED_ON",
-                obj=new_regions,
-                old_obj=old_region,
-                supersedes_fact_id=old_fact_id,
-                scope=scope,
-                description=f"{subject} DEPLOYED_ON {new_regions} (supersedes {old_region})",
-                quote=region_update_match.group(0).strip(),
-                confidence=1.0,
-            ))
-
-        # "push the production cutover back by 10 days"
-        shift_match = re.search(r"(?:push|delay|postpone)\s+the\s+(?:production\s+)?cutover\s+back\s+by\s+(\d+)\s+days", clean_text, re.IGNORECASE)
-        if shift_match:
-            days_delta = int(shift_match.group(1))
-            old_date = "November 14"
-            old_fact_id = None
-            if "PRODUCTION_CUTOVER_DATE" in existing_by_pred:
-                candidate_date = existing_by_pred["PRODUCTION_CUTOVER_DATE"][0].get("object") or existing_by_pred["PRODUCTION_CUTOVER_DATE"][0].get("obj", "")
-                if candidate_date and candidate_date.strip().casefold() != "project titan":
-                    old_date = candidate_date
-                old_fact_id = existing_by_pred["PRODUCTION_CUTOVER_DATE"][0].get("id") or existing_by_pred["PRODUCTION_CUTOVER_DATE"][0].get("edge_id")
-
-            new_date = shift_date_string(old_date, days_delta)
-            mutations.append(ProposedMutation(
-                action=DeltaAction.TEMPORAL_SHIFT,
-                subject=subject,
-                predicate="PRODUCTION_CUTOVER_DATE",
-                obj=new_date,
-                old_obj=old_date,
-                supersedes_fact_id=old_fact_id,
-                scope=scope,
-                description=f"{subject} PRODUCTION_CUTOVER_DATE {new_date} (shifted +{days_delta} days from {old_date})",
-                quote=shift_match.group(0).strip(),
-                confidence=1.0,
-            ))
-
-        if mutations:
-            return mutations
 
     # 2. General Planned vs Completed Distinctions
     plan_match = re.search(r"we plan to migrate (?:to )?([A-Za-z0-9_\s]+?)(?: in [A-Za-z0-9_\s]+|\.|$)", clean_text, re.IGNORECASE)
@@ -571,7 +418,14 @@ def extract_state_deltas(
         )]
 
     # 4. Standard relational patterns fallback
-    raw_facts = extract_facts_from_messages([], llm=llm, agent_id=agent_id, user_scope=user_scope, target_text=clean_text)
+    raw_facts = extract_facts_from_messages(
+        [],
+        llm=llm,
+        agent_id=agent_id,
+        user_scope=user_scope,
+        target_text=clean_text,
+        recent_history=recent_history,
+    )
     mutations = []
     for rf in raw_facts:
         mutations.append(ProposedMutation(

@@ -47,6 +47,7 @@ audit_report.md
 plan.md
 architecture.md
 check_results.json
+eval_kryptodb_strict_results.json
 code.txt
 logs.txt
 scratch/

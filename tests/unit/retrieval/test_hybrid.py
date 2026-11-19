@@ -1,70 +1,11 @@
-"""Unit tests for Phase 5 Hybrid Search and Reciprocal Rank Fusion."""
+"""Unit tests for Reciprocal Rank Fusion (RRF) and hybrid search ranking."""
 
 from __future__ import annotations
 
 import pytest
-from datetime import datetime, timezone
 
-from kryptodb.core.context import RequestContext
-from kryptodb.core.memory.models import MemoryRecord, MemoryStatus
-from kryptodb.core.retrieval.hybrid import HybridSearcher, reciprocal_rank_fusion
 from kryptodb.core.ports import ScoredItem
-from tests.fakes import FakeMemoryStore, FakeEmbedder
-
-
-@pytest.fixture
-def populated_store():
-    embedder = FakeEmbedder(dimension=64)
-    store = FakeMemoryStore(embedder=embedder)
-    ctx = RequestContext.create(tenant_id="tenant-acme", agent_id="agent-1", active_scopes=["default", "research"])
-
-    facts = [
-        MemoryRecord(
-            id="f-alice",
-            subject="Alice Smith",
-            predicate="WORKS_FOR",
-            object="Acme Corp",
-            description="Alice Smith is employed by Acme Corp as lead researcher.",
-            tenant_id="tenant-acme",
-            scope="research",
-            status=MemoryStatus.ACTIVE,
-        ),
-        MemoryRecord(
-            id="f-bob",
-            subject="Bob Jones",
-            predicate="MANAGES",
-            object="Database Cluster",
-            description="Bob Jones manages the primary PostgreSQL database cluster.",
-            tenant_id="tenant-acme",
-            scope="default",
-            status=MemoryStatus.ACTIVE,
-        ),
-        MemoryRecord(
-            id="f-carol",
-            subject="Carol White",
-            predicate="AUTHORS",
-            object="Quantum Paper",
-            description="Carol White authored the publication on quantum computing.",
-            tenant_id="tenant-acme",
-            scope="default",
-            status=MemoryStatus.ACTIVE,
-        ),
-        MemoryRecord(
-            id="f-foreign",
-            subject="Eve Black",
-            predicate="OWNS",
-            object="Secret Project",
-            description="Eve Black owns the secret foreign project.",
-            tenant_id="tenant-other",
-            scope="default",
-            status=MemoryStatus.ACTIVE,
-        ),
-    ]
-
-    for f in facts:
-        store.write_fact(f, ctx)
-
-    return store, embedder
+from kryptodb.core.retrieval.rrf import reciprocal_rank_fusion, rrf_fuse
 
 
 def test_rrf_mathematical_properties():
@@ -85,45 +26,43 @@ def test_rrf_mathematical_properties():
     assert fused[0].score == pytest.approx(fused[1].score)
 
 
-def test_exact_match_ranks_first(populated_store):
-    store, embedder = populated_store
-    searcher = HybridSearcher(store=store, embedder=embedder, rrf_k=60)
-    ctx = RequestContext.create(tenant_id="tenant-acme", agent_id="agent-1", active_scopes=["default", "research"])
-
-    results = searcher.search_candidates("Alice Smith", ctx, top_k=5)
-    assert len(results) > 0
-    # Exact entity match for Alice Smith should be at the top
-    top_result = results[0]
-    assert "Alice Smith" in top_result.text or top_result.item_id.startswith("ent-")
-
-
-def test_multi_word_fact_query_via_bm25(populated_store):
-    store, embedder = populated_store
-    searcher = HybridSearcher(store=store, embedder=embedder, rrf_k=60)
-    ctx = RequestContext.create(tenant_id="tenant-acme", agent_id="agent-1", active_scopes=["default", "research"])
-
-    results = searcher.search_candidates("quantum computing publication", ctx, top_k=5)
-    assert len(results) > 0
-    matched_ids = [r.item_id for r in results]
-    assert "f-carol" in matched_ids
+def test_rrf_with_dicts():
+    vec_results = [
+        {"id": "doc-1", "name": "Document 1", "score": 0.95},
+        {"id": "doc-2", "name": "Document 2", "score": 0.80},
+    ]
+    bm25_results = [
+        {"id": "doc-2", "name": "Document 2", "score": 12.5},
+        {"id": "doc-3", "name": "Document 3", "score": 8.0},
+    ]
+    fused = reciprocal_rank_fusion(vec_results, bm25_results, k=60)
+    assert len(fused) == 3
+    # doc-2 is in both streams (rank 2 in vec, rank 1 in bm25) -> highest score
+    assert fused[0]["id"] == "doc-2"
+    assert "rrf_score" in fused[0]
+    assert fused[0]["rrf_score"] > fused[1]["rrf_score"]
 
 
-def test_tenant_isolation_returns_zero_foreign_facts(populated_store):
-    store, embedder = populated_store
-    searcher = HybridSearcher(store=store, embedder=embedder, rrf_k=60)
-    # Query for Eve Black who belongs to tenant-other from tenant-acme context
-    ctx = RequestContext.create(tenant_id="tenant-acme", agent_id="agent-1", active_scopes=["default"])
+def test_rrf_fuse_top_k():
+    list_a = [ScoredItem(f"doc-{i}", 1.0 / (i + 1), "fact", f"doc {i}") for i in range(20)]
+    list_b = [ScoredItem(f"doc-{i}", 1.0 / (i + 1), "fact", f"doc {i}") for i in range(10, 30)]
 
-    results = searcher.search_candidates("Eve Black", ctx, top_k=5)
-    for r in results:
-        assert r.item_id != "f-foreign"
-        assert "Eve Black" not in r.text
+    fused = rrf_fuse([list_a, list_b], k=60, top_k=5)
+    assert len(fused) == 5
+    assert fused[0].item_id == "doc-0" or fused[0].item_id == "doc-10"
 
 
-def test_inactive_scope_returns_zero_facts(populated_store):
-    store, embedder = populated_store
-    searcher = HybridSearcher(store=store, embedder=embedder, rrf_k=60)
-    # Context with empty scopes
-    ctx_empty = RequestContext.create(tenant_id="tenant-acme", agent_id="agent-1", active_scopes=[])
-    results = searcher.search_candidates("lead researcher", ctx_empty, top_k=5)
-    assert len(results) == 0
+def test_rrf_empty_streams():
+    assert reciprocal_rank_fusion([], k=60) == []
+    assert reciprocal_rank_fusion([], [], k=60) == []
+    assert rrf_fuse([], k=60, top_k=5) == []
+
+
+def test_rrf_single_stream_preserves_order():
+    items = [
+        ScoredItem("doc-1", 1.0, "fact", "doc one"),
+        ScoredItem("doc-2", 0.5, "fact", "doc two"),
+        ScoredItem("doc-3", 0.2, "fact", "doc three"),
+    ]
+    fused = reciprocal_rank_fusion(items, k=60)
+    assert [x.item_id for x in fused] == ["doc-1", "doc-2", "doc-3"]
