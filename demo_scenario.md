@@ -1,6 +1,6 @@
 # KryptoDB Demo Scenario: Insider Threat Investigation
 
-This document contains a sequential list of prompts to run in an MCP-enabled agent (like Claude Desktop or Cursor). This scenario builds a complex, interconnected graph across multiple encrypted scopes and demonstrates KryptoDB's ability to maintain strict access boundaries while linking complex relationships.
+This document contains a sequential list of prompts to run in an MCP-enabled agent (like Claude Desktop or Cursor). This scenario builds a complex, interconnected graph across multiple partitioned knowledge scopes and demonstrates KryptoDB's ability to maintain strict access boundaries while linking complex relationships.
 
 ---
 
@@ -55,7 +55,7 @@ Before starting, ensure your Agent is configured with an API key that has access
 ---
 
 ## 🧠 Phase 4: Complex Multi-Scope Retrieval
-*Goal: Prove that the agent can traverse the graph across different encrypted partitions to answer complex questions.*
+*Goal: Prove that the agent can traverse the graph across different partitioned scopes to answer complex questions.*
 
 **Prompt 4:**
  "Ensure that `ORG:acme-structure`, `PROJECT:alpha`, and `RESEARCH:threat-intel` are all active in your session. 

@@ -73,9 +73,9 @@ flowchart TD
     end
 
     subgraph Infrastructure ["Infrastructure Layer"]
-        Neo4j_DB[("Neo4j Plaintext Graph<br/>• Centralized Queries (queries.py)<br/>• Entity & Fact Vector Indexes (384-dim Cosine)<br/>• Entity Name & Fact Text BM25 Indexes")]
+        Neo4j_DB[("Neo4j Graph Store<br/>• Centralized Queries (queries.py)<br/>• Entity & Fact Vector Indexes (384-dim Cosine)<br/>• Entity Name & Fact Text BM25 Indexes")]
         Redis_DB[("Redis Queue / Cache")]
-        Legacy_Crypto["Legacy Crypto Engine<br/>(Parked in kryptodb/legacy/crypto/)"]
+        SQLite_DB[("SQLite Checkpointer<br/>(Durable Thread State)")]
     end
 
     Agent_MCP --> MCP_Server
@@ -93,12 +93,13 @@ flowchart TD
 
     Ports --> Neo4j_DB
     Ports --> Redis_DB
+    Ports --> SQLite_DB
 ```
 
 ### Architectural Principles
 
 1. **Unified Core Behind Dual Ingress:** MCP tools and REST endpoints call the exact same application core services (`MemoryService`, `RetrievalService`, `EventStore`). Interfaces contain no business logic.
-2. **Plaintext Graph Storage with Native Indexing:** Nodes and edges are stored readable in Neo4j (`:Entity`, `:Event`, `:Episode`, `[:FACT]`), unlocking native fulltext Lucene search (`entity_name_ft`, `fact_text_ft`) and vector similarity indexes (`entity_vector_index`, `fact_vector_index`) without blind-indexing performance penalties. Legacy encryption code is preserved and parked in `kryptodb/legacy/crypto/`.
+2. **Native Graph Storage with Dense Vector Indexing:** Nodes and edges are modeled directly in Neo4j (`:Entity`, `:Event`, `:Episode`, `[:FACT]`), unlocking native fulltext Lucene search (`entity_name_ft`, `fact_text_ft`) and vector similarity indexes (`entity_vector_index`, `fact_vector_index`) for high-throughput Cypher traversal without blind-indexing performance penalties.
 3. **Single Choke Point for All Queries:** Every Cypher query and filter passes through `RequestContext -> FilterBuilder.build()`, ensuring centralized enforcement of `tenant_id`, scope claims, active status, and temporal validity windows (`valid_from` $\le$ now $<$ `valid_until`).
 4. **Hybrid Reciprocal Rank Fusion (RRF):** Dense cosine similarity and BM25 keyword matching execute in parallel. Candidate entities are fused using rank reciprocal scoring ($k=60$) to eliminate scale distortions:
    $$\text{RRF}(d) = \sum_{m \in \{\text{vector}, \text{bm25}\}} \frac{1}{60 + \text{rank}_m(d)}$$
@@ -224,7 +225,7 @@ npm run dev
 # 1. Verify clean architecture boundaries (contracts: 2 kept, 0 broken)
 uv run lint-imports
 
-# 2. Run complete test suite (197 passed, 0 failed, 100% green)
+# 2. Run complete test suite (197 passed, 0 failed)
 uv run pytest
 
 # 3. Run 8-tier benchmark suite (T0-T7 latency, multi-hop, cardinality)
@@ -242,15 +243,15 @@ uv run pytest tests/unit/interfaces/test_contract_parity.py -v
 
 ---
 
-## 🔄 Plaintext Migration Script
+## 🔄 Schema Migration Utility
 
-To migrate existing encrypted KryptoDB databases to the new plaintext GraphRAG schema:
+To re-index or migrate database exports into the native GraphRAG schema:
 
 ```bash
-# Dry run: inspect encrypted edges without modifying data
+# Dry run: inspect records without modifying data
 PYTHONPATH=. uv run python scripts/migrate_to_plaintext.py --dry-run
 
-# Live execution: decrypt and populate plaintext fields
+# Live execution: populate plaintext and vector fields
 PYTHONPATH=. uv run python scripts/migrate_to_plaintext.py --live
 ```
 
@@ -380,7 +381,7 @@ kryptodb/
   agent_runtime/
     langgraph/      # LangGraph state graph and checkpointer (optional runtime adapter)
   legacy/
-    crypto/         # Parked encryption engine (not imported by core)
+    crypto/         # Backward-compatibility test fixtures and shims
   daemon/           # FastAPI application factory (app.py)
 tests/
   unit/             # Modular unit tests (agent state graph, retrieval, memory lifecycle)
@@ -391,6 +392,8 @@ scripts/
   run_eval_benchmark.py   # Benchmark evaluation runner
   eval_kryptodb_strict.py # Strict 5-test autonomous evaluation suite
 docs/
+  ARCHITECTURE.md   # Authoritative system architecture specification
+  FILE_CATALOG.md   # Exhaustive file-by-file directory reference
   phases/           # Detailed phase-by-phase implementation records (Phases 0 - 9)
   MIGRATION_MAP.md  # Old -> New module mapping
   SHORTCOMINGS_AND_LESSONS_LEARNED.md # Engineering failure modes & architectural post-mortems
