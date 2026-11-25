@@ -26,7 +26,7 @@ This document provides an exhaustive, authoritative catalog detailing the exact 
 4. [Agent Runtime & HITL State Machine (`kryptodb/agent_runtime/`)](#4-agent-runtime--hitl-state-machine-kryptodbagent_runtime)
 5. [Daemon Application (`kryptodb/daemon/`)](#5-daemon-application-kryptodbdaemon)
 6. [Background Workers (`kryptodb/workers/`)](#6-background-workers-kryptodbworkers)
-7. [Legacy Modules & Compatibility Shims](#7-legacy-modules--compatibility-shims)
+7. [Configuration & Persistent Data Stores (`data/`)](#7-configuration--persistent-data-stores-data)
 8. [Frontend Web Application (`ui/`)](#8-frontend-web-application-ui)
 9. [Operational & Benchmark Scripts (`scripts/`)](#9-operational--benchmark-scripts-scripts)
 10. [Test Suites & Fixtures (`tests/`)](#10-test-suites--fixtures-tests)
@@ -405,11 +405,8 @@ This document provides an exhaustive, authoritative catalog detailing the exact 
 - **Purpose**: FastAPI application factory (`create_app()`). Configures CORS, lifecycle hooks (ensuring Neo4j schema on boot), and mounts all REST routers.
 - **Export**: `app = create_app()`.
 
-#### [`kryptodb/daemon/server.py`](../kryptodb/daemon/server.py)
-- **Purpose**: Entry point running Uvicorn server for local development.
-
-#### [`kryptodb/daemon/auth.py`, `sessions.py`, `mcp_server.py`](../kryptodb/daemon/)
-- **Purpose**: Backward-compatibility re-export shims forwarding legacy imports to their canonical locations in `core/identity/` and `interfaces/mcp/`.
+#### [`kryptodb/daemon/auth.py`, `sessions.py`](../kryptodb/daemon/)
+- **Purpose**: Session keyring (`SessionKeyring`) and legacy session compatibility wrappers supporting unit tests (`core/identity/` holds canonical auth and policy).
 
 ---
 

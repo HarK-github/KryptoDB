@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 import json
 from kryptodb.infrastructure.neo4j.client import neo4j_client
 from kryptodb.daemon import keyring
-from kryptodb.integrity.partition_crypto import Encryptor
 
 # Fixed scope KEKs for evaluation
 EVAL_SCOPE_KEYS = {

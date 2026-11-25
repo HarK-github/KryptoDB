@@ -296,8 +296,9 @@ The frontend application provides real-time visualization and administrative gov
   - Interactive citation tags linking assistant answers directly to graph edges.
 
 
-## Known Limitations
+## Current Capabilities & Known Limitations
 
-- **Logical Isolation (Plaintext Storage):** v0.2.0 stores plaintext facts and embeddings in Neo4j Community Edition (`5.21.2-community`), isolated logically via `RequestContext` and `FilterBuilder`. See `docs/audit/THREAT_MODEL.md`.
-- **Bi-Temporal Queries:** `recorded_from` / `recorded_to` timestamps are recorded on writes, while `as_of_valid` / `as_of_recorded` historical query parameters in `FilterBuilder` are scheduled for Phase 4.
-- **Legacy Stack Removal:** Unmounted v0.1.0 modules (`daemon/server.py`, `graph/`, `memory_api/`, `agent/`, `integrity/`, `legacy/`) remain pending deletion after full test verification.
+- **Storage Modes (`KRYPTODB_STORAGE_MODE`):** Defaults to `plaintext` (logical isolation via `RequestContext`, `PolicyEngine`, and `FilterBuilder` in Neo4j Community Edition `5.21.2-community`). Setting `KRYPTODB_STORAGE_MODE=encrypted` enables v3 daemon-side AES-256-GCM envelope encryption, keyed HMAC blind indexes, and `RAMVectorIndex` ([`docs/audit/ENCRYPTION_PLAN.md`](audit/ENCRYPTION_PLAN.md)).
+- **Unified Access Control:** HTTP REST, WebSocket, FastMCP, and LangGraph tools authenticate through `Authenticator` (SQLite SHA-256 hashed keys, zero default dev keys) and enforce tenant, role, and scope boundaries via [`kryptodb/core/identity/policy.py`](../kryptodb/core/identity/policy.py) (`PolicyEngine`).
+- **Bi-Temporal Queries:** `recorded_from` / `recorded_to` timestamps are recorded on writes, while `as_of_valid` / `as_of_recorded` historical query parameters in `FilterBuilder` support temporal filtering.
+- **Legacy Stack Removed:** The unmounted v0.1.0 stack (`daemon/server.py`, `daemon/mcp_server.py`, `graph/`, `memory_api/`, `agent/`, `integrity/`, `legacy/`) has been deleted.

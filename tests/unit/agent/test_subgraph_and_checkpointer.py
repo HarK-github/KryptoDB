@@ -2,7 +2,7 @@ import pytest
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from kryptodb.agent.graph import (
+from kryptodb.agent_runtime.langgraph.graph import (
     AgentState,
     create_extraction_subgraph,
     get_compiled_graph,

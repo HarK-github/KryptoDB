@@ -2,7 +2,7 @@ import pytest
 import json
 import os
 from langchain_core.messages import HumanMessage
-from kryptodb.agent.graph import get_compiled_graph
+from kryptodb.agent_runtime.langgraph.graph import get_compiled_graph
 
 
 @pytest.mark.asyncio

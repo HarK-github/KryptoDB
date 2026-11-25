@@ -16,7 +16,7 @@ import pytest
 from langchain_core.messages import HumanMessage, AIMessage
 from unittest.mock import MagicMock
 
-from kryptodb.agent.graph import (
+from kryptodb.agent_runtime.langgraph.graph import (
     AgentState,
     MessageIntent,
     IntentClassificationResult,

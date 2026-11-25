@@ -5,7 +5,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from kryptodb.agent.graph import (
+from kryptodb.agent_runtime.langgraph.graph import (
     get_compiled_graph,
     is_sensitive_scope,
 )

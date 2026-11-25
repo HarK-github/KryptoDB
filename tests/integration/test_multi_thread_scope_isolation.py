@@ -2,7 +2,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from kryptodb.agent.graph import get_compiled_graph
+from kryptodb.agent_runtime.langgraph.graph import get_compiled_graph
 
 
 def test_multi_thread_scope_isolation():

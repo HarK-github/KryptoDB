@@ -1,7 +1,7 @@
 import os
 import pytest
 from fastapi.testclient import TestClient
-from kryptodb.daemon.server import app
+from kryptodb.daemon.app import app
 
 client = TestClient(app)
 

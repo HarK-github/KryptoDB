@@ -1,6 +1,6 @@
 import pytest
 from pydantic import ValidationError
-from kryptodb.agent.graph import (
+from kryptodb.agent_runtime.langgraph.graph import (
     AgentState,
     FactItem,
     create_agent_graph,

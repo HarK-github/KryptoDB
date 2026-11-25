@@ -1,7 +1,11 @@
 import pytest
 from langchain_core.messages import HumanMessage
-from kryptodb.agent import extract_facts_from_messages, FactItem
-from kryptodb.agent.graph import get_compiled_graph, AgentState
+from kryptodb.agent_runtime.langgraph.graph import (
+    extract_facts_from_messages,
+    FactItem,
+    get_compiled_graph,
+    AgentState,
+)
 
 
 def test_structured_fact_extraction():

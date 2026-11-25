@@ -132,6 +132,7 @@ KryptoDB is continuously evaluated against a 50-query gold standard benchmark su
 | **Conversation Recall@10** | 0.7167 | **0.4167** | ⚠️ Needs multi-turn tuning | -41.86% |
 | **p50 Latency (ms)** *(all-MiniLM-L6-v2 CPU)* | 0.32 ms *(fake)* | **33.20 ms** *(real)* | ✅ Unmocked CPU | Production |
 | **p95 Latency (ms)** *(all-MiniLM-L6-v2 CPU)* | 0.46 ms *(fake)* | **84.61 ms** *(real)* | ✅ Unmocked CPU | Production |
+| **RAMVectorIndex Rebuild (100 facts)** | — | **3.26 ms** *(top-10 p50: 10.55 ms)* | ✅ Encrypted Mode | In-memory |
 
 Run the retrieval benchmark locally:
 ```bash

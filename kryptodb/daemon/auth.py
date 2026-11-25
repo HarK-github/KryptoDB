@@ -147,11 +147,7 @@ class ApiKeyRegistry:
     def effective_scopes(self, context: AuthContext) -> set[str]:
         if context.is_admin:
             return set()
-        from kryptodb.memory_api import get_agent
-        agent = get_agent(context.agent_id)
-        if not agent:
-            return set()
-        return set(agent.get("allowed_scopes", [])) & set(context.scopes)
+        return set(context.scopes)
 
 
 api_keys = ApiKeyRegistry()

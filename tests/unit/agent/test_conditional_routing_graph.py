@@ -1,6 +1,6 @@
 import pytest
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from kryptodb.agent.graph import (
+from kryptodb.agent_runtime.langgraph.graph import (
     AgentState,
     create_agent_graph,
     get_compiled_graph,

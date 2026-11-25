@@ -102,18 +102,14 @@ class SessionKeyring:
     def remove_key(self, partition: str):
         self._keys.pop(partition, None)
         self._active_partitions.discard(partition)
-        from kryptodb.integrity.partition_crypto import clear_crypto_cache
-        clear_crypto_cache()
 
     def revoke_partitions(self, partitions: set[str] | list[str]):
         for p in partitions:
             self.remove_key(p)
 
     def clear(self):
-        from kryptodb.integrity.partition_crypto import clear_crypto_cache
         self._active_partitions.clear()
         self._keys.clear()
-        clear_crypto_cache()
 
 
 # Global singleton for the daemon process
