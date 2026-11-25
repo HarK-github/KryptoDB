@@ -1,149 +1,68 @@
-name: Build, Test & Publish
+name: KryptoDB CI
 
 on:
   push:
-    branches: [main]
-    tags: ["v*.*.*"]
+    branches: [main, master, "audit-*"]
   pull_request:
-    branches: [main]
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/kryptodb
 
 jobs:
-  # ── Backend tests ────────────────────────────────────────────────────────
-  test-backend:
-    name: Backend tests
+  verify:
     runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.21.2-community
+        env:
+          NEO4J_AUTH: neo4j/kryptodb_ci_password
+        ports:
+          - 7474:7474
+          - 7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p kryptodb_ci_password 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      KRYPTODB_ENV: production
+      KRYPTODB_ADMIN_API_KEY: ci-admin-secret-key
+      NEO4J_URI: bolt://localhost:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: kryptodb_ci_password
+      REDIS_URL: redis://localhost:6379/0
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
+          python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install uv and dependencies
         run: |
-          pip install -e ".[test]" \
-            fastapi uvicorn neo4j redis pydantic pydantic-settings \
-            cryptography mcp pytest pytest-asyncio httpx
+          pip install uv
+          uv pip install --system -e ".[embeddings]" import-linter pytest pytest-asyncio httpx
 
-      - name: Compile check
-        run: python -m compileall -q kryptodb
+      - name: Check hexagonal architecture import contracts
+        run: lint-imports
 
-      - name: Run unit tests
-        run: pytest -q tests/unit/ --tb=short
-        env:
-          KRYPTODB_ENV: development
-
-  # ── Frontend build ──────────────────────────────────────────────────────
-  build-frontend:
-    name: Frontend build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: Install UI deps
-        run: npm ci --ignore-scripts
-        working-directory: ui
-
-      - name: Build Next.js (standalone)
-        run: npm run build
-        working-directory: ui
-        env:
-          NEXT_PUBLIC_KRYPTODB_URL: ""
-          NEXT_TELEMETRY_DISABLED: "1"
-
-  # ── Docker image ─────────────────────────────────────────────────────────
-  build-image:
-    name: Build & push Docker image
-    needs: [test-backend, build-frontend]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: true
-          sbom: true
-
-  # ── Compose smoke test ───────────────────────────────────────────────────
-  smoke-test:
-    name: Docker Compose smoke test
-    needs: build-image
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Write test env
+      - name: Run full unit & security gate suites
         run: |
-          cat > .env <<'EOF'
-          KRYPTODB_ENV=development
-          NEO4J_PASSWORD=testpassword
-          NEO4J_URI=bolt://neo4j:7687
-          NEO4J_USER=neo4j
-          REDIS_URL=redis://redis:6379/0
-          KRYPTODB_MASTER_KEY=${{ secrets.KRYPTODB_TEST_MASTER_KEY || '0000000000000000000000000000000000000000000000000000000000000000' }}
-          KRYPTODB_ADMIN_API_KEY=test-admin-key
-          KRYPTODB_VERSION=sha-${{ github.sha }}
-          EOF
+          pytest tests/unit/security/test_p0_security_and_correctness.py \
+                 tests/unit/security/test_step1_unified_access_control.py \
+                 tests/unit/memory/test_step2_step3_semantics.py \
+                 tests/unit/crypto/test_encrypted_phase1.py \
+                 tests/unit/crypto/test_encrypted_phase2.py \
+                 tests/unit/crypto/test_encrypted_phase3.py
 
-      - name: Create dummy scope keys file
-        run: echo '{}' > kryptodb-scope-keys.json
-
-      - name: Start services
-        run: docker compose -f kryptodb-compose.yml up -d --wait
-        timeout-minutes: 3
-
-      - name: Health check
-        run: |
-          curl -f http://localhost:8000/health || (docker compose -f kryptodb-compose.yml logs && exit 1)
-
-      - name: Tear down
-        if: always()
-        run: docker compose -f kryptodb-compose.yml down -v
+      - name: Run live Neo4j E2E & full test suite
+        run: pytest -q

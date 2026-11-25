@@ -33,20 +33,25 @@ class PathReranker:
         self,
         model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
         llm_rerank_fn: Optional[Callable[[str, List[str]], List[float]]] = None,
+        cross_encoder: Optional[Any] = None,
     ):
         self.model_name = model_name
         self.llm_rerank_fn = llm_rerank_fn
-        self._cross_encoder = None
+        self._cross_encoder = cross_encoder
         self._use_fallback = True
 
-        try:
-            from sentence_transformers import CrossEncoder
-            self._cross_encoder = CrossEncoder(self.model_name)
+        if self._cross_encoder is not None:
             self._use_fallback = False
-            logger.info("Loaded CrossEncoder model: %s", self.model_name)
-        except Exception as exc:
-            logger.info("CrossEncoder unavailable (%s); using lexical scoring fallback.", exc)
-            self._use_fallback = True
+        else:
+            try:
+                import importlib
+                st = importlib.import_module("sentence_transformers")
+                self._cross_encoder = st.CrossEncoder(self.model_name)
+                self._use_fallback = False
+                logger.info("Loaded CrossEncoder model: %s", self.model_name)
+            except Exception as exc:
+                logger.info("CrossEncoder unavailable (%s); using lexical scoring fallback.", exc)
+                self._use_fallback = True
 
     def compute_relevance_scores(self, query: str, candidate_texts: List[str]) -> List[float]:
         """Calculates semantic query-candidate relevance in [0, 1]."""

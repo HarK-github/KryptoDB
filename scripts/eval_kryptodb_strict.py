@@ -471,6 +471,34 @@ def run_benchmark() -> Dict[str, Any]:
         t4_passed = False
         t4_failures.append(f"Q_history failed to mention 'postgresql 14': '{ans_hist}'")
 
+    # Step 2.2: Verify actual Neo4j edge supersession state (not just LLM text)
+    try:
+        from kryptodb.infrastructure.neo4j.client import neo4j_client
+        rows, _, _ = neo4j_client.execute_query_with_retry(
+            """
+            MATCH (s:Entity)-[r:FACT {scope: $scope}]->(o:Entity)
+            RETURN o.name AS obj, r.status AS status, r.valid_until AS valid_until
+            """,
+            scope=scope_t4,
+        )
+        pg14_superseded = any(
+            "14" in str(row.get("obj", "")) and row.get("status") == "superseded" and row.get("valid_until") is not None
+            for row in rows
+        )
+        pg16_active = any(
+            "16" in str(row.get("obj", "")) and row.get("status") == "active"
+            for row in rows
+        )
+        if not pg14_superseded:
+            t4_passed = False
+            t4_failures.append("Neo4j check failed: PostgreSQL 14 edge is not status='superseded' with valid_until set")
+        if not pg16_active:
+            t4_passed = False
+            t4_failures.append("Neo4j check failed: PostgreSQL 16 edge is not status='active'")
+    except Exception as db_exc:
+        t4_passed = False
+        t4_failures.append(f"Neo4j edge state verification failed: {db_exc}")
+
     results["test_4_temporal_supersession"] = {
         "passed": t4_passed,
         "failure_reason": "; ".join(t4_failures) if t4_failures else None,

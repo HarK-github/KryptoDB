@@ -8,6 +8,12 @@ from typing import Any, Optional
 from kryptodb.core.embeddings.embedder import default_embedder
 from kryptodb.core.ports import Embedder
 from kryptodb.infrastructure.neo4j.client import neo4j_client
+from kryptodb.infrastructure.neo4j.queries import (
+    FIND_PENDING_EDGE_EMBEDDINGS_QUERY,
+    UPDATE_EDGE_EMBEDDING_QUERY,
+    FIND_PENDING_ENTITY_EMBEDDINGS_QUERY,
+    UPDATE_ENTITY_EMBEDDING_QUERY,
+)
 
 logger = logging.getLogger("kryptodb.workers.embedding_retry")
 
@@ -24,12 +30,7 @@ def reembed_pending_edges(
     if not cli or not getattr(cli, "driver", None):
         return 0
 
-    find_query = """
-    MATCH ()-[r:FACT]->()
-    WHERE r.embedding_pending = true
-    RETURN r.id AS id, r.predicate AS predicate, r.description AS description
-    LIMIT $limit
-    """
+    find_query = FIND_PENDING_EDGE_EMBEDDINGS_QUERY
 
     try:
         if hasattr(cli, "execute_query_with_retry"):
@@ -49,11 +50,7 @@ def reembed_pending_edges(
 
         try:
             vector = emb.embed(desc)
-            update_query = """
-            MATCH ()-[r:FACT {id: $id}]->()
-            SET r.embedding = $vector,
-                r.embedding_pending = false
-            """
+            update_query = UPDATE_EDGE_EMBEDDING_QUERY
             if hasattr(cli, "execute_query_with_retry"):
                 cli.execute_query_with_retry(update_query, id=fact_id, vector=vector)
             else:
@@ -77,12 +74,7 @@ def reembed_pending_entities(
     if not cli or not getattr(cli, "driver", None):
         return 0
 
-    find_query = """
-    MATCH (n:Entity)
-    WHERE n.embedding_pending = true
-    RETURN n.id AS id, n.name AS name
-    LIMIT $limit
-    """
+    find_query = FIND_PENDING_ENTITY_EMBEDDINGS_QUERY
 
     try:
         if hasattr(cli, "execute_query_with_retry"):
@@ -102,11 +94,7 @@ def reembed_pending_entities(
 
         try:
             vector = emb.embed(name)
-            update_query = """
-            MATCH (n:Entity {id: $id})
-            SET n.embedding = $vector,
-                n.embedding_pending = false
-            """
+            update_query = UPDATE_ENTITY_EMBEDDING_QUERY
             if hasattr(cli, "execute_query_with_retry"):
                 cli.execute_query_with_retry(update_query, id=entity_id, vector=vector)
             else:

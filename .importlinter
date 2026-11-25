@@ -1,5 +1,6 @@
 [importlinter]
 root_package = kryptodb
+include_external_packages = True
 
 [importlinter:contract:layers]
 name = Layered Architecture
@@ -16,4 +17,9 @@ source_modules =
 forbidden_modules =
     kryptodb.interfaces
     kryptodb.agent_runtime
-    kryptodb.legacy
+    kryptodb.infrastructure
+    kryptodb.daemon
+    neo4j
+    redis
+    langgraph
+    sentence_transformers

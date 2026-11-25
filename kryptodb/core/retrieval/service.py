@@ -29,11 +29,13 @@ class RetrievalService:
         traverser: Optional[MultiHopTraverser] = None,
         reranker: Optional[PathReranker] = None,
         client: Any = None,
+        encrypted_retrieval: Any = None,
     ):
         self.client = client or neo4j_client
         self.hybrid_engine = hybrid_engine or hybrid_search_engine
         self.traverser = traverser or multihop_traverser
         self.reranker = reranker or path_reranker
+        self.encrypted_retrieval = encrypted_retrieval
 
     def search(
         self,
@@ -48,6 +50,24 @@ class RetrievalService:
         with tracer.start_as_current_span("retrieval.search") as span:
             span.set_attribute("query", query)
             span.set_attribute("tenant_id", tenant_id)
+            if self.encrypted_retrieval is not None:
+                from kryptodb.core.context import RequestContext
+                scopes_to_query = [s for s in (active_scopes or ["default"]) if s and s != "*"] or ["default"]
+                ctx = RequestContext.create(
+                    tenant_id=tenant_id,
+                    agent_id="retrieval-service",
+                    active_scopes=scopes_to_query,
+                    now=now,
+                )
+                combined: List[AttributedMemoryResult] = []
+                seen_ids = set()
+                for sc in scopes_to_query:
+                    for hit in self.encrypted_retrieval.search(query=query, context=ctx, scope=sc, top_k=top_k):
+                        if hit.fact_id not in seen_ids:
+                            seen_ids.add(hit.fact_id)
+                            combined.append(hit)
+                combined.sort(key=lambda r: r.final_score, reverse=True)
+                return combined[:top_k]
             return self._search_graphrag(
                 query, tenant_id, active_scopes, top_k, max_hops, relevance_cutoff, now
             )

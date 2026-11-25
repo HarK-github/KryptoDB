@@ -1,20 +1,31 @@
 from __future__ import annotations
 
+import importlib
 import logging
 from typing import Any, Dict, List, Optional
 
-from kryptodb.infrastructure.embeddings import embedding_service
-from kryptodb.infrastructure.neo4j.client import neo4j_client
-from kryptodb.infrastructure.neo4j.queries import (
-    HYBRID_FULLTEXT_ENTITY_QUERY,
-    HYBRID_VECTOR_ENTITY_ALT_QUERY,
-    HYBRID_VECTOR_ENTITY_QUERY,
-    SEMANTIC_SEED_FALLBACK_ENTITY_QUERY,
-    SEMANTIC_SEED_FALLBACK_FACT_QUERY,
-)
+from kryptodb.core.embeddings.embedder import default_embedder
+from kryptodb.core.ports import Embedder
 from kryptodb.core.retrieval.rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger("kryptodb.hybrid_search")
+
+
+def _get_neo4j_client() -> Any:
+    try:
+        mod = importlib.import_module("kryptodb.infrastructure.neo4j.client")
+        return getattr(mod, "neo4j_client", None)
+    except Exception:
+        return None
+
+
+def _get_query(query_name: str) -> str:
+    try:
+        mod = importlib.import_module("kryptodb.infrastructure.neo4j.queries")
+        return getattr(mod, query_name, "")
+    except Exception:
+        return ""
+
 
 STOP_WORDS = {
     "a", "an", "the", "is", "are", "was", "were", "and", "or", "to", "in", "on", "at",
@@ -30,8 +41,23 @@ STOP_WORDS = {
 }
 
 class HybridSearchEngine:
-    def __init__(self, client: Any = None):
-        self.client = client or neo4j_client
+    def __init__(self, client: Any = None, embedder: Optional[Embedder] = None):
+        self._client = client
+        self.embedder = embedder or default_embedder
+
+    @property
+    def client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        return _get_neo4j_client()
+
+    def _embed_query(self, query: str) -> List[float]:
+        if self.embedder is not None:
+            if hasattr(self.embedder, "embed_query"):
+                return self.embedder.embed_query(query)
+            if hasattr(self.embedder, "embed"):
+                return self.embedder.embed(query)
+        return default_embedder.embed(query)
 
     def find_seed_entities(
         self,
@@ -47,12 +73,12 @@ class HybridSearchEngine:
         if not query or not query.strip():
             return []
 
-        query_vec = embedding_service.embed_query(query)
+        query_vec = self._embed_query(query)
         vector_results: List[Dict[str, Any]] = []
         bm25_results: List[Dict[str, Any]] = []
 
         # 1. Vector Search on Entity nodes
-        vector_query = HYBRID_VECTOR_ENTITY_QUERY
+        vector_query = _get_query("HYBRID_VECTOR_ENTITY_QUERY")
         try:
             records, _, _ = self.client.execute_query_with_retry(
                 vector_query,
@@ -70,7 +96,7 @@ class HybridSearchEngine:
         except Exception as exc:
             # Fallback to alternate index name if entity_embedding_idx not found
             try:
-                alt_query = HYBRID_VECTOR_ENTITY_ALT_QUERY
+                alt_query = _get_query("HYBRID_VECTOR_ENTITY_ALT_QUERY")
                 records, _, _ = self.client.execute_query_with_retry(
                     alt_query,
                     top_k=top_k * 2,
@@ -96,7 +122,7 @@ class HybridSearchEngine:
 
         if clean_terms:
             lucene_query = " OR ".join([f"{term}*" for term in clean_terms])
-            fulltext_query = HYBRID_FULLTEXT_ENTITY_QUERY
+            fulltext_query = _get_query("HYBRID_FULLTEXT_ENTITY_QUERY")
             try:
                 records, _, _ = self.client.execute_query_with_retry(
                     fulltext_query,
@@ -141,11 +167,11 @@ class HybridSearchEngine:
         if not query or not query.strip():
             return []
 
-        query_vec = embedding_service.embed_query(query)
+        query_vec = self._embed_query(query)
         seeds_by_id: Dict[str, Dict[str, Any]] = {}
 
         # 1. Cosine similarity over Entity embeddings in active scope
-        entity_cypher = SEMANTIC_SEED_FALLBACK_ENTITY_QUERY
+        entity_cypher = _get_query("SEMANTIC_SEED_FALLBACK_ENTITY_QUERY")
         try:
             if hasattr(self.client, "execute_query_with_retry"):
                 records, _, _ = self.client.execute_query_with_retry(
@@ -179,7 +205,7 @@ class HybridSearchEngine:
             logger.debug("Entity semantic seed fallback failed: %s", exc)
 
         # 2. Cosine similarity over Fact embeddings in active scope
-        fact_cypher = SEMANTIC_SEED_FALLBACK_FACT_QUERY
+        fact_cypher = _get_query("SEMANTIC_SEED_FALLBACK_FACT_QUERY")
         try:
             if hasattr(self.client, "execute_query_with_retry"):
                 records, _, _ = self.client.execute_query_with_retry(
@@ -219,3 +245,4 @@ class HybridSearchEngine:
         return sorted_seeds[:top_k]
 
 hybrid_search_engine = HybridSearchEngine()
+

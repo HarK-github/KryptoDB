@@ -2,27 +2,41 @@
 
 from __future__ import annotations
 
+FIND_BY_IDEMPOTENCY_KEY_QUERY = """
+MATCH (s:Entity)-[r:FACT {idempotency_key: $idempotency_key, tenant_id: $tenant_id}]->(o:Entity)
+WHERE r.status = 'active'
+RETURN r, s.name AS subject, o.name AS object
+LIMIT 1
+"""
+
 WRITE_FACT_QUERY = """
-MERGE (s:Entity {name: $s_name, tenant_id: $tenant_id})
+MERGE (s:Entity {norm_name: $s_norm_name, tenant_id: $tenant_id})
 ON CREATE SET s.id = $s_id,
+              s.name = $s_name,
               s.embedding = $s_emb,
               s.embedding_pending = $s_pending,
               s.created_at = $now,
               s.updated_at = $now
-ON MATCH SET s.embedding = coalesce(s.embedding, $s_emb),
+ON MATCH SET s.name = coalesce(s.name, $s_name),
+             s.embedding = coalesce(s.embedding, $s_emb),
              s.updated_at = $now
+SET s._write_lock = true
 
-MERGE (o:Entity {name: $o_name, tenant_id: $tenant_id})
+MERGE (o:Entity {norm_name: $o_norm_name, tenant_id: $tenant_id})
 ON CREATE SET o.id = $o_id,
+              o.name = $o_name,
               o.embedding = $o_emb,
               o.embedding_pending = $o_pending,
               o.created_at = $now,
               o.updated_at = $now
-ON MATCH SET o.embedding = coalesce(o.embedding, $o_emb),
+ON MATCH SET o.name = coalesce(o.name, $o_name),
+             o.embedding = coalesce(o.embedding, $o_emb),
              o.updated_at = $now
+REMOVE s._write_lock
 
 CREATE (s)-[r:FACT {
     id: $fact_id,
+    idempotency_key: $idempotency_key,
     predicate: $predicate,
     description: $description,
     embedding: $rel_emb,
@@ -35,6 +49,8 @@ CREATE (s)-[r:FACT {
     trust_weight: $trust_weight,
     valid_from: $valid_from,
     valid_until: $valid_until,
+    recorded_from: $now,
+    recorded_to: NULL,
     source_agent_id: $source_agent_id,
     dataset_id: $dataset_id,
     created_at: $now
@@ -49,45 +65,61 @@ RETURN r, s.name AS subject, o.name AS object
 """
 
 FIND_ACTIVE_BY_SUBJECT_PREDICATE_QUERY = """
-MATCH (s:Entity {name: $subject, tenant_id: $tenant_id})-[r:FACT {predicate: $predicate}]->(o:Entity)
-WHERE {filter_clause}
+MATCH (s:Entity {tenant_id: $tenant_id})-[r:FACT {predicate: $predicate}]->(o:Entity)
+WHERE (s.norm_name = $norm_subject OR toLower(s.name) = $norm_subject)
+  AND {filter_clause}
 RETURN r, s.name AS subject, o.name AS object
 """
 
 SUPERSEDE_FACT_QUERY = """
 MATCH ()-[r:FACT {id: $old_id, tenant_id: $tenant_id}]->()
+SET r._lock = true
+WITH r
+WHERE r.status = 'active'
 SET r.status = 'superseded',
     r.valid_until = $now,
+    r.recorded_to = $now,
     r.superseded_by = $new_id
+REMOVE r._lock
 RETURN r.id AS id
 """
 
 ATOMIC_SUPERSEDE_QUERY = """
 MATCH ()-[old_r:FACT {id: $old_id, tenant_id: $tenant_id}]->()
+SET old_r._lock = true
+WITH old_r
+WHERE old_r.status = 'active' AND ($scope IS NULL OR old_r.scope = $scope)
 SET old_r.status = 'superseded',
     old_r.valid_until = $now,
+    old_r.recorded_to = $now,
     old_r.superseded_by = $fact_id
+REMOVE old_r._lock
 
-MERGE (s:Entity {name: $s_name, tenant_id: $tenant_id})
+MERGE (s:Entity {norm_name: $s_norm_name, tenant_id: $tenant_id})
 ON CREATE SET s.id = $s_id,
+              s.name = $s_name,
               s.embedding = $s_emb,
               s.embedding_pending = $s_pending,
               s.created_at = $now,
               s.updated_at = $now
-ON MATCH SET s.embedding = coalesce(s.embedding, $s_emb),
+ON MATCH SET s.name = coalesce(s.name, $s_name),
+             s.embedding = coalesce(s.embedding, $s_emb),
              s.updated_at = $now
 
-MERGE (o:Entity {name: $o_name, tenant_id: $tenant_id})
+MERGE (o:Entity {norm_name: $o_norm_name, tenant_id: $tenant_id})
 ON CREATE SET o.id = $o_id,
+              o.name = $o_name,
               o.embedding = $o_emb,
               o.embedding_pending = $o_pending,
               o.created_at = $now,
               o.updated_at = $now
-ON MATCH SET o.embedding = coalesce(o.embedding, $o_emb),
+ON MATCH SET o.name = coalesce(o.name, $o_name),
+             o.embedding = coalesce(o.embedding, $o_emb),
              o.updated_at = $now
 
 CREATE (s)-[r:FACT {
     id: $fact_id,
+    idempotency_key: $idempotency_key,
     predicate: $predicate,
     description: $description,
     embedding: $rel_emb,
@@ -100,6 +132,8 @@ CREATE (s)-[r:FACT {
     trust_weight: $trust_weight,
     valid_from: $valid_from,
     valid_until: $valid_until,
+    recorded_from: $now,
+    recorded_to: NULL,
     source_agent_id: $source_agent_id,
     dataset_id: $dataset_id,
     created_at: $now,
@@ -110,8 +144,14 @@ RETURN s, r, o
 
 REVOKE_FACT_QUERY = """
 MATCH ()-[r:FACT {id: $fact_id, tenant_id: $tenant_id}]->()
+WHERE r.status = 'active'
+  AND ($is_system = true OR r.scope IN $active_scopes)
 SET r.status = 'revoked',
-    r.valid_until = $now
+    r.description = NULL,
+    r.embedding = NULL,
+    r.predicate = 'REVOKED',
+    r.valid_until = $now,
+    r.recorded_to = $now
 RETURN r.id AS id
 """
 
@@ -203,8 +243,43 @@ RETURN ep.id AS id
 REVOKE_BY_USER_QUERY = """
 MATCH ()-[r:FACT {tenant_id: $tenant_id}]->()
 WHERE r.user_id = $user_id OR r.source_agent_id = $user_id
-SET r.status = 'revoked', r.valid_until = $now
+SET r.status = 'revoked',
+    r.valid_until = $now,
+    r.recorded_to = $now,
+    r.description = NULL,
+    r.embedding = NULL
 RETURN count(r) AS revoked_count
+"""
+
+PURGE_USER_EVENTS_QUERY = """
+MATCH (ev:Event {tenant_id: $tenant_id})
+WHERE ev.user_id = $user_id OR ev.agent_id = $user_id
+DETACH DELETE ev
+RETURN count(ev) AS deleted_events
+"""
+
+PURGE_USER_EPISODES_QUERY = """
+MATCH (ep:Episode {tenant_id: $tenant_id})
+WHERE ep.user_id = $user_id OR ep.agent_id = $user_id
+DETACH DELETE ep
+RETURN count(ep) AS deleted_episodes
+"""
+
+GRAPH_SNAPSHOT_NODES_QUERY = """
+MATCH (n:Entity)
+WHERE ($tenant_id IS NULL OR n.tenant_id = $tenant_id)
+RETURN n.id AS id, n.name AS name, n.kind AS kind, n.tenant_id AS tenant_id,
+       n.embedding IS NOT NULL AS has_embedding
+LIMIT 500
+"""
+
+GRAPH_SNAPSHOT_EDGES_QUERY = """
+MATCH (s:Entity)-[r:FACT]->(t:Entity)
+WHERE {filter_clause}
+RETURN r.id AS id, s.id AS source, t.id AS target, r.predicate AS predicate,
+       r.description AS description, r.scope AS scope, r.confidence AS confidence,
+       r.status AS status, r.valid_from AS valid_from, r.valid_until AS valid_until
+LIMIT 1000
 """
 
 SEARCH_ENTITIES_PREFIX_QUERY = """
@@ -332,5 +407,31 @@ UNWIND [s, o] AS node
 RETURN DISTINCT node.id AS id, node.name AS name, max(score) AS score
 ORDER BY score DESC
 LIMIT $top_k
+"""
+
+FIND_PENDING_EDGE_EMBEDDINGS_QUERY = """
+MATCH ()-[r:FACT]->()
+WHERE r.embedding_pending = true
+RETURN r.id AS id, r.predicate AS predicate, r.description AS description
+LIMIT $limit
+"""
+
+UPDATE_EDGE_EMBEDDING_QUERY = """
+MATCH ()-[r:FACT {id: $id}]->()
+SET r.embedding = $vector,
+    r.embedding_pending = false
+"""
+
+FIND_PENDING_ENTITY_EMBEDDINGS_QUERY = """
+MATCH (n:Entity)
+WHERE n.embedding_pending = true
+RETURN n.id AS id, n.name AS name
+LIMIT $limit
+"""
+
+UPDATE_ENTITY_EMBEDDING_QUERY = """
+MATCH (n:Entity {id: $id})
+SET n.embedding = $vector,
+    n.embedding_pending = false
 """
 

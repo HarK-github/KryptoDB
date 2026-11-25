@@ -14,7 +14,8 @@ def test_predicate_registry():
     assert reg.normalize("lives in") == "LIVES_IN"
     assert reg.get_cardinality("LIVES_IN") == Cardinality.ONE
     assert reg.get_cardinality("lives-in") == Cardinality.ONE
-    assert reg.get_cardinality("WORKS_FOR") == Cardinality.MANY
+    assert reg.get_cardinality("WORKS_FOR") == Cardinality.ONE
+    assert reg.get_cardinality("MEMBER_OF") == Cardinality.MANY
     assert reg.get_cardinality("UNKNOWN_CUSTOM_PREDICATE") == Cardinality.MANY
     
     # Custom registration
@@ -22,14 +23,23 @@ def test_predicate_registry():
     assert reg.get_cardinality("OWNS_PET") == Cardinality.ONE
 
 def test_conflict_engine_cardinality_one_supersede():
-    mock_client = MagicMock()
+    mock_store = MagicMock()
     # Mock an existing active fact: Alice LIVES_IN New York (conf=0.8)
-    mock_client.execute_query_with_retry.return_value = (
-        [{"fact_id": "old-fact-1", "existing_object": "New York", "confidence": 0.8, "version": 1}],
-        None, None
-    )
+    mock_store.find_active_by_subject_predicate.return_value = [
+        MemoryRecord(
+            id="old-fact-1",
+            subject="Alice",
+            predicate="LIVES_IN",
+            object="New York",
+            confidence=0.8,
+            version=1,
+            status=MemoryStatus.ACTIVE,
+            tenant_id="tenant-1",
+            scope="default",
+        )
+    ]
 
-    engine = ConflictEngine(client=mock_client)
+    engine = ConflictEngine(store=mock_store)
     
     # Alice now proposed to live in San Francisco with higher confidence 0.95
     res = engine.evaluate_proposal(
@@ -46,14 +56,23 @@ def test_conflict_engine_cardinality_one_supersede():
     assert res["next_version"] == 2
 
 def test_conflict_engine_cardinality_one_flag_conflict():
-    mock_client = MagicMock()
+    mock_store = MagicMock()
     # Existing active fact: Alice LIVES_IN New York (conf=0.9)
-    mock_client.execute_query_with_retry.return_value = (
-        [{"fact_id": "old-fact-1", "existing_object": "New York", "confidence": 0.9, "version": 1}],
-        None, None
-    )
+    mock_store.find_active_by_subject_predicate.return_value = [
+        MemoryRecord(
+            id="old-fact-1",
+            subject="Alice",
+            predicate="LIVES_IN",
+            object="New York",
+            confidence=0.9,
+            version=1,
+            status=MemoryStatus.ACTIVE,
+            tenant_id="tenant-1",
+            scope="default",
+        )
+    ]
 
-    engine = ConflictEngine(client=mock_client)
+    engine = ConflictEngine(store=mock_store)
     
     # Lower confidence 0.7 proposal
     res = engine.evaluate_proposal(
@@ -68,19 +87,28 @@ def test_conflict_engine_cardinality_one_flag_conflict():
     assert res["action"] == "STAGE_PROPOSED"
 
 def test_conflict_engine_cardinality_many_coexist():
-    mock_client = MagicMock()
+    mock_store = MagicMock()
     # Alice already WORKS_FOR Acme Corp
-    mock_client.execute_query_with_retry.return_value = (
-        [{"fact_id": "old-fact-1", "existing_object": "Acme Corp", "confidence": 0.9, "version": 1}],
-        None, None
-    )
+    mock_store.find_active_by_subject_predicate.return_value = [
+        MemoryRecord(
+            id="old-fact-1",
+            subject="Alice",
+            predicate="MEMBER_OF",
+            object="Acme Corp",
+            confidence=0.9,
+            version=1,
+            status=MemoryStatus.ACTIVE,
+            tenant_id="tenant-1",
+            scope="default",
+        )
+    ]
 
-    engine = ConflictEngine(client=mock_client)
+    engine = ConflictEngine(store=mock_store)
     
-    # Alice also WORKS_FOR Beta Industries (cardinality MANY)
+    # Alice also MEMBER_OF Beta Industries (cardinality MANY)
     res = engine.evaluate_proposal(
         subject="Alice",
-        predicate="WORKS_FOR",
+        predicate="MEMBER_OF",
         obj="Beta Industries",
         confidence=0.85,
         tenant_id="tenant-1"
@@ -90,12 +118,12 @@ def test_conflict_engine_cardinality_many_coexist():
     assert res["action"] == "CREATE_ACTIVE"
 
 def test_memory_service_write_and_revoke():
-    mock_client = MagicMock()
-    mock_client.execute_query_with_retry.return_value = (
-        [{"id": "fact-101"}], None, None
-    )
+    mock_store = MagicMock()
+    def mock_write(fact, ctx):
+        return fact
+    mock_store.write_fact.side_effect = mock_write
 
-    service = MemoryService(client=mock_client)
+    service = MemoryService(store=mock_store)
     record = service.write_fact(
         subject="Alice",
         predicate="CONTRIBUTED_TO",
@@ -114,3 +142,4 @@ def test_memory_service_write_and_revoke():
     # Revoke
     revoked = service.revoke_fact("fact-101", tenant_id="tenant-1")
     assert revoked is True
+    mock_store.revoke.assert_called_once()

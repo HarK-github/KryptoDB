@@ -19,11 +19,16 @@ class LocalSentenceEmbedder(Embedder):
     def __init__(
         self,
         metadata: Optional[EmbeddingMetadata] = None,
+        model: Optional[Any] = None,
         use_real: Optional[bool] = None,
     ) -> None:
         self._meta = metadata or DEFAULT_EMBEDDING_METADATA
-        self._model = None
+        self._model = model
         self._use_fallback = False
+
+        if self._model is not None:
+            self._use_fallback = False
+            return
 
         should_use_real = (
             use_real
@@ -33,8 +38,9 @@ class LocalSentenceEmbedder(Embedder):
 
         if should_use_real:
             try:
-                from sentence_transformers import SentenceTransformer
-                self._model = SentenceTransformer(self._meta.model_name)
+                import importlib
+                st = importlib.import_module("sentence_transformers")
+                self._model = st.SentenceTransformer(self._meta.model_name)
                 logger.info("SentenceTransformer loaded: %s", self._meta.model_name)
             except Exception as exc:
                 logger.warning("Could not load real SentenceTransformer (%s): %s. Using deterministic fallback.", self._meta.model_name, exc)

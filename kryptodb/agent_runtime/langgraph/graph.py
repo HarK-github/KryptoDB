@@ -22,7 +22,24 @@ from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import interrupt
-from kryptodb.graph import is_sensitive_scope
+SENSITIVE_SCOPES = frozenset({"pii", "finance", "medical", "hr", "secrets", "restricted", "confidential", "top_secret"})
+
+def is_sensitive_scope(scope: Optional[str]) -> bool:
+    if not scope:
+        return False
+    clean = str(scope).strip().lower()
+    if clean.startswith(("confidential:", "restricted:", "top_secret:")):
+        return True
+    tokens = set(re.split(r"[:/\-_\s]+", clean))
+    return bool(tokens & SENSITIVE_SCOPES or any(s in clean for s in SENSITIVE_SCOPES))
+
+
+def get_agent(aid: str):
+    from kryptodb.core.identity.authentication import authenticator
+    for a in authenticator.list_agents():
+        if a.get("id") == aid:
+            return a
+    return None
 from kryptodb.core.memory.turn_analysis import turn_analyzer, LLMTurnAnalyzer, TurnAnalysisResult, SegmentType
 from kryptodb.core.memory.write_policy import validate_proposal, WritePolicyViolation
 from kryptodb.core.memory.rejection_store import record_rejection, is_proposal_rejected
@@ -48,7 +65,7 @@ def get_api_key() -> str:
                 return key
         except OSError:
             pass
-    return os.environ.get("KRYPTODB_API_KEY", "dev-admin-key")
+    return os.environ.get("KRYPTODB_API_KEY", "")
 
 
 def request_headers() -> dict[str, str]:
@@ -122,7 +139,7 @@ def propose_fact_tool(
         "description": description or f"{subj_val} {pred_val} {obj_val}",
         "dataset_id": dataset_id,
     }
-    # 1. Try daemon HTTP endpoint
+    # Strictly route writes through daemon HTTP API (never bypass auth/PolicyEngine)
     try:
         response = httpx.post(
             f"{DAEMON_URL}/memory/remember",
@@ -136,41 +153,14 @@ def propose_fact_tool(
         )
         if response.status_code == 200:
             return json.dumps(response.json(), indent=2)
-        elif response.status_code in (403, 422):
-            return json.dumps({"status": "rejected", "code": response.status_code})
+        return json.dumps({
+            "status": "error",
+            "code": response.status_code,
+            "detail": response.text[:300],
+        })
     except Exception as exc:
-        logger.debug("Daemon HTTP remember unavailable: %s; falling back to in-process memory service", exc)
-
-    # 2. In-process memory service fallback
-    try:
-        from kryptodb.memory_api.service import memory_service as mem_svc
-        res = mem_svc.remember(
-            agent_id=agent_id,
-            fact=fact_payload,
-            scope=scope_val,
-        )
-        return json.dumps(res, indent=2)
-    except Exception:
-        pass
-
-    # 3. Direct unified core memory service fallback
-    try:
-        from kryptodb.core.memory import memory_service as core_mem_svc
-        from kryptodb.core.context import RequestContext
-        ctx = RequestContext(tenant_id="default", user_id=agent_id, agent_id=agent_id, active_scopes=[scope_val])
-        rec = core_mem_svc.write_fact(
-            subject=subj_val,
-            predicate=pred_val,
-            obj=obj_val,
-            description=description,
-            scope=scope_val,
-            tenant_id="default",
-            source_agent_id=agent_id,
-            dataset_id=dataset_id,
-        )
-        return json.dumps({"status": "committed", "fact_id": rec.id}, indent=2)
-    except Exception as core_exc:
-        return json.dumps({"status": "failed", "reason": str(core_exc)})
+        logger.warning("Daemon HTTP remember failed: %s", exc)
+        return json.dumps({"status": "error", "code": 503, "detail": str(exc)})
 
 
 @tool
@@ -183,16 +173,14 @@ def revoke_fact_tool(
 ) -> str:
     """Revoke or retract a factual relationship from the active memory substrate."""
     agent_id = get_agent_id()
-    # 1. Try daemon HTTP endpoint
+    # Strictly route revocations through daemon HTTP API (never bypass auth/PolicyEngine)
     try:
         if fact_id:
             response = httpx.delete(
-                f"{DAEMON_URL}/revoke/{fact_id}",
+                f"{DAEMON_URL}/api/v1/memory/revoke/{fact_id}",
                 headers=request_headers(),
                 timeout=5.0,
             )
-            if response.status_code == 200:
-                return json.dumps(response.json(), indent=2)
         elif subject and predicate:
             response = httpx.post(
                 f"{DAEMON_URL}/memory/forget",
@@ -201,41 +189,23 @@ def revoke_fact_tool(
                     "scope": scope or "research",
                     "subject": subject,
                     "predicate": predicate,
-                    "approved": True,
+                    "approved": False,
                 },
                 timeout=5.0,
             )
-            if response.status_code == 200:
-                return json.dumps(response.json(), indent=2)
+        else:
+            return json.dumps({"status": "error", "code": 400, "detail": "fact_id or (subject, predicate) required"})
+
+        if response.status_code == 200:
+            return json.dumps(response.json(), indent=2)
+        return json.dumps({
+            "status": "error",
+            "code": response.status_code,
+            "detail": response.text[:300],
+        })
     except Exception as exc:
-        logger.debug("Daemon revoke endpoint unavailable: %s; falling back to in-process store", exc)
-
-    # 2. In-process fallback
-    try:
-        from kryptodb.infrastructure.neo4j.client import neo4j_client
-        if hasattr(neo4j_client, "connect") and not getattr(neo4j_client, "driver", None):
-            neo4j_client.connect()
-        from datetime import datetime, timezone
-        now_iso = datetime.now(timezone.utc).isoformat()
-        if fact_id:
-            from kryptodb.core.memory import memory_service as core_mem_svc
-            core_mem_svc.revoke_fact(fact_id)
-            return json.dumps({"status": "revoked", "fact_id": fact_id}, indent=2)
-        elif subject and predicate:
-            query = """
-            MATCH (s:Entity {name: $subject})-[r:FACT {predicate: $predicate}]->(o:Entity)
-            WHERE (r.status = 'active' OR r.status IS NULL) AND (r.valid_until IS NULL OR r.valid_until > $now)
-            SET r.status = 'revoked', r.valid_until = $now
-            RETURN r.id AS id
-            """
-            recs, _, _ = neo4j_client.execute_query_with_retry(query, subject=subject, predicate=predicate, now=now_iso)
-            revoked_ids = [r["id"] for r in recs if r.get("id")]
-            return json.dumps({"status": "revoked", "revoked_count": len(revoked_ids), "fact_ids": revoked_ids}, indent=2)
-    except Exception as e:
-        logger.error("Error revoking fact in in-process fallback: %s", e)
-        return json.dumps({"status": "failed", "reason": str(e)})
-
-    return json.dumps({"status": "revoked", "fact_id": fact_id, "subject": subject, "predicate": predicate})
+        logger.warning("Daemon revoke endpoint failed: %s", exc)
+        return json.dumps({"status": "error", "code": 503, "detail": str(exc)})
 
 
 KRYPTODB_TOOLS = [query_memory_tool, propose_fact_tool, revoke_fact_tool]
@@ -449,9 +419,7 @@ def create_intent_classifier_node(llm: Optional[Any] = None, analyzer: Optional[
 
         # Entity-targeted search query resolution for stateful delta extraction
         entity_name = None
-        if "titan" in latest_clean.lower():
-            entity_name = "Project Titan"
-        elif analysis.mentioned_entities:
+        if analysis.mentioned_entities:
             for ent in analysis.mentioned_entities:
                 if ent.resolved_to:
                     entity_name = ent.resolved_to
@@ -522,7 +490,7 @@ def create_recall_node(llm: Optional[Any] = None):
                     break
 
             try:
-                from kryptodb.memory_api import get_agent
+                pass  # uses module-level get_agent
                 agent = get_agent(state.agent_id)
                 allowed_scopes = agent.get("allowed_scopes", []) if agent else ([state.user_scope] if state.user_scope and state.user_scope != "AUTO" else [])
             except Exception:
@@ -544,10 +512,7 @@ def create_recall_node(llm: Optional[Any] = None):
             else:
                 query_candidate = latest_user_msg
 
-            if "titan" in query_candidate.lower():
-                fallback_query = "Project Titan"
-            else:
-                fallback_query = query_candidate.strip() if query_candidate else latest_user_msg
+            fallback_query = query_candidate.strip() if query_candidate else latest_user_msg
 
             if bound_llm:
                 try:
@@ -569,7 +534,7 @@ def create_recall_node(llm: Optional[Any] = None):
                             if tc.get("name") == "query_memory_tool":
                                 args = tc.setdefault("args", {})
                                 raw_q = args.get("query")
-                                if not raw_q or not isinstance(raw_q, str) or not raw_q.strip() or raw_q in ("{}", "{'query': ''}") or "titan" in str(raw_q).lower():
+                                if not raw_q or not isinstance(raw_q, str) or not raw_q.strip() or raw_q in ("{}", "{'query': ''}"):
                                     args["query"] = fallback_query
                         return {"messages": [response], "status": "recalling", "recalled_facts": state.recalled_facts, "denied_recalls": []}
                 except Exception as exc:
@@ -659,7 +624,7 @@ def synthesize_graph_answer(latest_msg: str, real_facts: List[Dict[str, Any]]) -
     adj: Dict[str, Dict[str, List[str]]] = {}
     pred_map: Dict[str, List[tuple[str, str]]] = {}
 
-    primary_subject = "Project Titan"
+    primary_subject = "System"
     for f in real_facts:
         s = f.get("subject", "System")
         p = f.get("predicate", "")
@@ -695,11 +660,7 @@ def synthesize_graph_answer(latest_msg: str, real_facts: List[Dict[str, Any]]) -
             if cand.lower() in msg_low:
                 target_entity = cand
                 break
-        if not target_entity and "titan" in msg_low:
-            target_entity = "Project Titan"
-        elif not target_entity and "ledger prime" in msg_low:
-            target_entity = "Ledger Prime"
-        elif not target_entity:
+        if not target_entity:
             target_entity = primary_subject
 
         arch_list = adj.get(target_entity, {}).get("LEAD_ARCHITECT", [])
@@ -720,11 +681,7 @@ def synthesize_graph_answer(latest_msg: str, real_facts: List[Dict[str, Any]]) -
             if cand.lower() in msg_low:
                 target_entity = cand
                 break
-        if not target_entity and "titan" in msg_low:
-            target_entity = "Project Titan"
-        elif not target_entity and "ledger prime" in msg_low:
-            target_entity = "Ledger Prime"
-        elif not target_entity:
+        if not target_entity:
             target_entity = primary_subject
 
         db_list = adj.get(target_entity, {}).get("USES", [])
@@ -802,7 +759,7 @@ def create_reasoning_node(llm: Optional[Any] = None):
                 break
 
         try:
-            from kryptodb.memory_api import get_agent
+            pass  # uses module-level get_agent
             agent = get_agent(state.agent_id)
             allowed_scopes = agent.get("allowed_scopes", []) if agent else ([state.user_scope] if state.user_scope and state.user_scope != "AUTO" else [])
         except Exception:
@@ -862,25 +819,7 @@ def create_reasoning_node(llm: Optional[Any] = None):
         )
 
         if real_facts:
-            # Check if this is a Project Titan summary request
-            is_titan_summary = any("project titan" in str(m.content if hasattr(m, "content") else "").lower() for m in state.messages) and any(w in str(latest_msg).lower() for w in ("summary", "sign-off", "parameters"))
-            if is_titan_summary:
-                titan_facts = {f.get("predicate"): f.get("object", f.get("obj")) for f in real_facts if "titan" in str(f.get("subject", "")).lower()}
-                arch = titan_facts.get("LEAD_ARCHITECT", "Elena Rostova")
-                regions = titan_facts.get("DEPLOYED_ON", "us-east-1 and eu-central-1")
-                db = titan_facts.get("USES", "CockroachDB")
-                sla = titan_facts.get("HAS_SLA", "under 45ms")
-                cutover = titan_facts.get("PRODUCTION_CUTOVER_DATE", "November 24")
-                reasoning = (
-                    f"Pre-Deployment Sign-Off Summary for Project Titan:\n"
-                    f"• Lead Architect: {arch}\n"
-                    f"• Final Cloud Regions: {regions}\n"
-                    f"• Database Engine: {db}\n"
-                    f"• Latency SLA: {sla}\n"
-                    f"• Production Cutover Date: {cutover}"
-                )
-            else:
-                reasoning = synthesize_graph_answer(latest_msg, real_facts)
+            reasoning = synthesize_graph_answer(latest_msg, real_facts)
 
             if state.intent in (MessageIntent.MIXED.value, "mixed") and (state.info_text or latest_msg):
                 if has_retract_intent:

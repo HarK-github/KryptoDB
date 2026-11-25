@@ -39,22 +39,22 @@ def test_predicate_cardinality_functional_supersedes():
 
 
 def test_predicate_cardinality_relational_coexists():
-    """WORKS_FOR has cardinality MANY: proposing multiple employers must allow coexistence."""
+    """MEMBER_OF has cardinality MANY: proposing multiple affiliations must allow coexistence."""
     store = FakeMemoryStore()
     service = MemoryService(store=store)
     ctx = RequestContext.create(tenant_id="tenant-acme", agent_id="agent-1", active_scopes=["default"])
 
-    f1 = service.propose_memory("Alice", "WORKS_FOR", "Acme Corp", ctx)
-    f2 = service.propose_memory("Alice", "WORKS_FOR", "Beta Labs", ctx)
+    f1 = service.propose_memory("Alice", "MEMBER_OF", "Acme Corp", ctx)
+    f2 = service.propose_memory("Alice", "MEMBER_OF", "Beta Labs", ctx)
 
     assert f1.id != f2.id
     assert store.facts[f1.id].status == MemoryStatus.ACTIVE
     assert store.facts[f2.id].status == MemoryStatus.ACTIVE
 
-    active = store.find_active_by_subject_predicate("Alice", "WORKS_FOR", ctx)
+    active = store.find_active_by_subject_predicate("Alice", "MEMBER_OF", ctx)
     assert len(active) == 2
-    employers = {a.object for a in active}
-    assert employers == {"Acme Corp", "Beta Labs"}
+    affiliations = {a.object for a in active}
+    assert affiliations == {"Acme Corp", "Beta Labs"}
 
 
 def test_exact_duplicate_does_not_create_new_edge():

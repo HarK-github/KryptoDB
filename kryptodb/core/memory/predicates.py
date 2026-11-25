@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 
 class Cardinality(str, Enum):
     ONE = "ONE"    # Functional (1-to-1): e.g. LIVES_IN, PRIMARY_EMAIL (supersedes previous value)
-    MANY = "MANY"  # Relational (1-to-N): e.g. WORKS_FOR, HAS_SKILL, INTERACTION (coexists)
+    MANY = "MANY"  # Relational (1-to-N): e.g. MEMBER_OF, CONTRIBUTES_TO, HAS_SKILL, INTERACTION (coexists)
 
 
 class PredicateRegistry:
@@ -38,7 +38,7 @@ class PredicateRegistry:
             "IS_A": Cardinality.MANY,
             "HAS": Cardinality.MANY,
             "PREFERS": Cardinality.MANY,
-            "WORKS_FOR": Cardinality.MANY,
+            "WORKS_FOR": Cardinality.ONE,
             "INTERESTED_IN": Cardinality.MANY,
             "VISITED": Cardinality.MANY,
             "DISLIKES": Cardinality.MANY,

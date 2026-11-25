@@ -221,7 +221,7 @@ export default function LiveGraph({ selected, onSelect, activeTraversal }: any) 
 
   const loadSnapshot = async () => {
     try {
-      const apiKey = typeof window !== 'undefined' ? (window.localStorage.getItem('kryptodb_api_key') || 'dev-admin-key') : 'dev-admin-key';
+      const apiKey = typeof window !== 'undefined' ? (window.localStorage.getItem('kryptodb_api_key') || '') : '';
       const res = await fetch(`${API_BASE}/graph/snapshot?agent_id=${agentId}`, {
         headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
       });

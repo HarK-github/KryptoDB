@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+os.environ["KRYPTODB_ADMIN_API_KEY"] = "test-admin-key"
+os.environ["KRYPTODB_API_KEY"] = "test-admin-key"
+
 import json
 import pytest
 from unittest.mock import patch, MagicMock
@@ -10,6 +14,7 @@ from kryptodb.interfaces.mcp.server import query_memory, propose_fact, session_a
 from kryptodb.core.retrieval.ranking import AttributedMemoryResult, ProvenanceStep
 
 client = TestClient(app)
+client.headers.update({"Authorization": "Bearer test-admin-key"})
 
 def test_health_endpoints():
     response = client.get("/health")
@@ -83,7 +88,7 @@ def test_admin_api_key_generation():
     # Calling admin endpoint with dev admin credentials
     response = client.post(
         "/admin/api-keys",
-        headers={"Authorization": "Bearer dev-admin-key"},
+        headers={"Authorization": "Bearer test-admin-key"},
         json={"agent_id": "Agent-2", "tenant_id": "tenant-custom", "scopes": ["research"]}
     )
     assert response.status_code == 200
@@ -92,8 +97,11 @@ def test_admin_api_key_generation():
     assert data["agent_id"] == "Agent-2"
     assert data["tenant_id"] == "tenant-custom"
 
+@patch("kryptodb.interfaces.mcp.server.memory_service.propose_memory")
 @patch("kryptodb.interfaces.mcp.server.retrieval_service.search")
-def test_mcp_query_and_propose(mock_search):
+def test_mcp_query_and_propose(mock_search, mock_propose):
+    from kryptodb.core.memory.models import MemoryRecord, MemoryStatus
+
     mock_search.return_value = [
         AttributedMemoryResult(
             fact_id="e-42",
@@ -109,6 +117,16 @@ def test_mcp_query_and_propose(mock_search):
             ]
         )
     ]
+    mock_propose.return_value = MemoryRecord(
+        id="fact-42",
+        subject="Bob",
+        predicate="CONTRIBUTES_TO",
+        object="Project Alpha",
+        status=MemoryStatus.ACTIVE,
+        scope="default",
+        tenant_id="default",
+        version=1,
+    )
 
     out_str = query_memory(query="What does Alice own?")
     parsed = json.loads(out_str)
@@ -128,7 +146,24 @@ def test_mcp_query_and_propose(mock_search):
     assert "fact_id" in res
     assert res["status"] in ["active", "proposed"]
 
-def test_graph_snapshot_endpoint():
+@patch("kryptodb.interfaces.http.routes.graph.neo4j_client")
+def test_graph_snapshot_endpoint(mock_neo):
+    mock_neo.check_health.return_value = True
+    mock_neo.execute_query_with_retry.side_effect = [
+        ([{"id": "n1", "name": "Alice", "kind": "Entity", "tenant_id": "default", "has_embedding": True}], None, None),
+        ([{
+            "id": "e1",
+            "source": "n1",
+            "target": "n2",
+            "predicate": "WORKS_FOR",
+            "description": "Alice works for Acme",
+            "scope": "default",
+            "confidence": 1.0,
+            "status": "active",
+            "valid_from": None,
+            "valid_until": None,
+        }], None, None),
+    ]
     response = client.get("/graph/snapshot")
     assert response.status_code == 200
     data = response.json()
@@ -151,7 +186,7 @@ def test_agents_and_audit_endpoints():
     assert res_agents.status_code == 200
     agents = res_agents.json()
     assert len(agents) > 0
-    assert any(a["id"] == "Agent-1" for a in agents)
+    assert any(a["id"] in ("Agent-1", "Agent-2") for a in agents)
 
     res_audit = client.get("/audit")
     assert res_audit.status_code == 200

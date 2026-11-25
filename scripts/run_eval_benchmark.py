@@ -17,7 +17,7 @@ from tests.eval.metrics import compute_recall_at_k, compute_precision_at_k, comp
 from tests.eval.test_gold_benchmark import InMemoryGraphStore
 from kryptodb.core.retrieval.service import RetrievalService
 from kryptodb.core.retrieval.hybrid_search import HybridSearchEngine
-from kryptodb.core.retrieval.multihop import MultiHopTraverser
+from kryptodb.core.retrieval.traversal import MultiHopTraverser
 from kryptodb.core.retrieval.ranking import PathReranker
 
 def setup_demo_scenario_graph() -> InMemoryGraphStore:

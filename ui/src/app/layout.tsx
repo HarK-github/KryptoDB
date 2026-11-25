@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "KryptoDB",
-  description: "Crypto-Enforced, Multi-Agent Memory Access Control on Neo4j",
+  description: "GraphRAG & Multi-Agent Memory Infrastructure on Neo4j",
   icons: {
     icon: "/icon.png",
   }

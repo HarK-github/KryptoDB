@@ -718,7 +718,8 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
 def get_active_llm():
     global ACTIVE_LLM_MODEL
-    if ACTIVE_LLM_MODEL == "deterministic-engine":
+    active = os.environ.get("LLM_MODEL", ACTIVE_LLM_MODEL)
+    if active == "deterministic-engine":
         return None
 
     if ACTIVE_LLM_MODEL.startswith("gemini"):

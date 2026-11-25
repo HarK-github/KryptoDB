@@ -28,6 +28,7 @@ class ConflictAction(str, Enum):
     REFRESH_EXISTING = "REFRESH_EXISTING"
     SUPERSEDE_AND_CREATE = "SUPERSEDE_AND_CREATE"
     REJECT_DUPLICATE = "REJECT_DUPLICATE"
+    FLAG_CONFLICT = "FLAG_CONFLICT"
 
 
 class ConflictEvaluationResult:
@@ -45,21 +46,11 @@ class ConflictEvaluationResult:
 
 
 class ConflictEngine:
-    """Evaluates proposed facts against active facts in MemoryStore or Neo4j."""
+    """Evaluates proposed facts against active facts via the MemoryStore port."""
 
     def __init__(self, store: Optional[MemoryStore] = None, client: Any = None):
         self.store = store
         self._client = client
-
-    @property
-    def client(self) -> Any:
-        if self._client is None:
-            try:
-                from kryptodb.infrastructure.neo4j.client import neo4j_client
-                self._client = neo4j_client
-            except Exception:
-                self._client = None
-        return self._client
 
     def evaluate(
         self,
@@ -69,6 +60,7 @@ class ConflictEngine:
         confidence: float,
         context: RequestContext,
         store: Optional[MemoryStore] = None,
+        is_explicit_mutation: bool = False,
     ) -> ConflictEvaluationResult:
         """Determines whether a proposed fact creates, refreshes, or supersedes an existing fact."""
         st = store or self.store
@@ -82,7 +74,6 @@ class ConflictEngine:
         if not active_facts:
             return ConflictEvaluationResult(action=ConflictAction.CREATE_ACTIVE)
 
-        # 1. Exact duplicate check
         clean_obj = obj.strip().casefold()
         for fact in active_facts:
             if fact.object.strip().casefold() == clean_obj:
@@ -92,15 +83,19 @@ class ConflictEngine:
                     version=fact.version,
                 )
 
-        # 2. Relational (MANY): coexists peacefully
         if cardinality == Cardinality.MANY:
             return ConflictEvaluationResult(
                 action=ConflictAction.CREATE_ACTIVE,
                 version=1,
             )
 
-        # 3. Functional (ONE): conflict! Old fact must be superseded
         old_fact = active_facts[0]
+        if not is_explicit_mutation and float(confidence) < float(old_fact.confidence):
+            return ConflictEvaluationResult(
+                action=ConflictAction.FLAG_CONFLICT,
+                existing_fact_id=old_fact.id,
+                version=old_fact.version,
+            )
         return ConflictEvaluationResult(
             action=ConflictAction.SUPERSEDE_AND_CREATE,
             supersede_fact_id=old_fact.id,
@@ -116,43 +111,47 @@ class ConflictEngine:
         tenant_id: str = "default",
         scope: Optional[str] = None,
         is_explicit_mutation: bool = False,
+        store: Optional[MemoryStore] = None,
     ) -> Dict[str, Any]:
-        """Queries active facts for (subject, predicate) within tenant_id and scope,
-        and determines conflict resolution outcome.
-        """
+        """Evaluates proposed facts through MemoryStore (no raw Cypher in core/)."""
         norm_pred = predicate_registry.normalize(predicate)
         cardinality = predicate_registry.get_cardinality(norm_pred)
+        st = store or self.store
 
-        query = """
-        MATCH (s:Entity {name: $subject, tenant_id: $tenant_id})-[r:FACT {predicate: $predicate, status: 'active'}]->(o:Entity)
-        WHERE r.tenant_id = $tenant_id AND ($scope IS NULL OR r.permission_scope = $scope)
-        RETURN r.id AS fact_id, o.name AS existing_object, r.confidence AS confidence, r.version AS version
-        ORDER BY r.version DESC, r.created_at DESC
-        """
-        clean_scope = None if scope in ("AUTO", "*", "GLOBAL", "") else scope
-        params = {
-            "subject": subject.strip(),
-            "predicate": norm_pred,
-            "tenant_id": tenant_id,
-            "scope": clean_scope,
-        }
+        clean_scope = None if scope in ("AUTO", "*", "GLOBAL", "", None) else scope
+        ctx = RequestContext.create(
+            tenant_id=tenant_id,
+            agent_id="conflict-engine",
+            active_scopes=[clean_scope] if clean_scope else ["*"],
+            is_system=clean_scope is None,
+        )
 
-        records = []
-        if self.client is not None:
+        active_facts: List[MemoryRecord] = []
+        if st is not None:
             try:
-                records, _, _ = self.client.execute_query_with_retry(query, **params)
+                active_facts = st.find_active_by_subject_predicate(subject.strip(), norm_pred, ctx)
             except Exception as exc:
-                logger.warning("Error querying existing facts for conflict check: %s", exc)
-                records = []
+                logger.warning("Error querying active facts for conflict check: %s", exc)
+                active_facts = []
 
-        if not records:
+        if not active_facts:
             return {
                 "resolution": ConflictResolution.NO_CONFLICT,
                 "action": "CREATE_ACTIVE",
                 "conflicting_facts": [],
             }
 
-        # Check for exact duplicate
+        records = [
+            {
+                "fact_id": f.id,
+                "existing_object": f.object,
+                "confidence": f.confidence,
+                "version": f.version,
+                "scope": f.scope,
+            }
+            for f in active_facts
+        ]
+
         for r in records:
             if r["existing_object"].strip().casefold() == obj.strip().casefold():
                 return {
@@ -162,7 +161,6 @@ class ConflictEngine:
                     "conflicting_facts": [r],
                 }
 
-        # If predicate is 1-to-many, multiple distinct objects can coexist happily
         if cardinality == Cardinality.MANY:
             return {
                 "resolution": ConflictResolution.NO_CONFLICT,
@@ -170,13 +168,11 @@ class ConflictEngine:
                 "conflicting_facts": [],
             }
 
-        # Predicate is Cardinality.ONE (Functional) and objects differ: Conflict!
         old_fact = records[0]
         old_conf = float(old_fact["confidence"] or 1.0)
         old_fact_id = old_fact["fact_id"]
         old_version = int(old_fact.get("version") or 1)
 
-        # Explicit mutation or equal/higher confidence allows supersession (recency wins on tie)
         if is_explicit_mutation or confidence >= old_conf:
             return {
                 "resolution": ConflictResolution.SUPERSEDE_OLD,
@@ -185,14 +181,12 @@ class ConflictEngine:
                 "next_version": old_version + 1,
                 "conflicting_facts": records,
             }
-        else:
-            return {
-                "resolution": ConflictResolution.FLAG_CONFLICT,
-                "action": "STAGE_PROPOSED",
-                "conflicting_facts": records,
-                "reason": f"New confidence ({confidence}) does not exceed active fact confidence ({old_conf})",
-            }
+        return {
+            "resolution": ConflictResolution.FLAG_CONFLICT,
+            "action": "STAGE_PROPOSED",
+            "conflicting_facts": records,
+            "reason": f"New confidence ({confidence}) does not exceed active fact confidence ({old_conf})",
+        }
 
 
 conflict_engine = ConflictEngine()
-

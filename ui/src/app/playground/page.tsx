@@ -74,7 +74,7 @@ const LiveGraph = dynamic(() => import('../GraphExplorer'), { ssr: false })
 const API_BASE = process.env.NEXT_PUBLIC_KRYPTODB_URL || (typeof window !== 'undefined' ? `http://${window.location.hostname}:8000` : 'http://127.0.0.1:8000')
 
 function apiFetch(path: string, init: RequestInit = {}) {
-    const apiKey = typeof window !== 'undefined' ? (window.localStorage.getItem('kryptodb_api_key') || 'dev-admin-key') : 'dev-admin-key'
+    const apiKey = typeof window !== 'undefined' ? (window.localStorage.getItem('kryptodb_api_key') || '') : ''
     const headers = new Headers(init.headers)
     if (apiKey) headers.set('Authorization', `Bearer ${apiKey}`)
     return fetch(`${API_BASE}${path}`, { ...init, headers })
@@ -718,7 +718,7 @@ function AgentsView() {
                         type="password" 
                         value={apiKey} 
                         onChange={e => setApiKey(e.target.value)} 
-                        placeholder="Paste KRYPTODB_ADMIN_API_KEY (e.g. dev-admin-key)" 
+                        placeholder="Paste KRYPTODB_ADMIN_API_KEY (e.g. kdb-admin-...)" 
                         aria-label="Administrator API key" 
                         style={{ flex: 1 }} 
                     />
@@ -1004,7 +1004,7 @@ function McpView() {
             .catch(() => {})
     }, [])
 
-    const config = `{"mcpServers":{"kryptodb":{"command":"uv","args":["run","kryptodb-mcp"],"env":{"AGENT_ID":"${agent}","KRYPTODB_API_KEY":"dev-admin-key","KRYPTODB_URL":"${API_BASE}"}}}}`
+    const config = `{"mcpServers":{"kryptodb":{"command":"uv","args":["run","kryptodb-mcp"],"env":{"AGENT_ID":"${agent}","KRYPTODB_API_KEY":"${apiKey || '<YOUR_API_KEY>'}","KRYPTODB_URL":"${API_BASE}"}}}}`
     const copy = () => { navigator.clipboard?.writeText(config); setCopied(true); setTimeout(() => setCopied(false), 1500) }
     const test = async () => { setStatus('connecting'); try { const response = await apiFetch('/health'); setStatus(response.ok ? 'connected' : 'error'); } catch { setStatus('error') } }
 

@@ -10,7 +10,7 @@
     <img src="https://img.shields.io/badge/Next.js-16.3-black?logo=next.js&logoColor=white" alt="Next.js">
     <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React 19">
     <img src="https://img.shields.io/badge/WebGL-Sigma.js-FF6600" alt="Sigma.js">
-    <img src="https://img.shields.io/badge/Tests-197%20Passing-brightgreen" alt="Tests: 197 Passing">
+    <img src="https://img.shields.io/badge/Tests-225%20Passing-brightgreen" alt="Tests: 225 Passing">
     <img src="https://img.shields.io/badge/Strict%20Eval-5%2F5%20Passed-brightgreen" alt="Strict Eval: 5/5 Passed">
     <img src="https://img.shields.io/badge/License-MIT-purple" alt="License: MIT">
   </p>
@@ -99,18 +99,18 @@ flowchart TD
 ### Architectural Principles
 
 1. **Unified Core Behind Dual Ingress:** MCP tools and REST endpoints call the exact same application core services (`MemoryService`, `RetrievalService`, `EventStore`). Interfaces contain no business logic.
-2. **Native Graph Storage with Dense Vector Indexing:** Nodes and edges are modeled directly in Neo4j (`:Entity`, `:Event`, `:Episode`, `[:FACT]`), unlocking native fulltext Lucene search (`entity_name_ft`, `fact_text_ft`) and vector similarity indexes (`entity_vector_index`, `fact_vector_index`) for high-throughput Cypher traversal without blind-indexing performance penalties.
+2. **Native Graph Storage with Dense Vector Indexing:** Nodes and edges are modeled directly in Neo4j (`:Entity`, `:Event`, `:Episode`, `[:FACT]`), unlocking native fulltext Lucene search (`entity_name_ft`, `fact_text_ft`) and vector similarity indexes (`entity_embedding_idx`, `fact_embedding_idx`, `episode_embedding_idx`).
 3. **Single Choke Point for All Queries:** Every Cypher query and filter passes through `RequestContext -> FilterBuilder.build()`, ensuring centralized enforcement of `tenant_id`, scope claims, active status, and temporal validity windows (`valid_from` $\le$ now $<$ `valid_until`).
-4. **Hybrid Reciprocal Rank Fusion (RRF):** Dense cosine similarity and BM25 keyword matching execute in parallel. Candidate entities are fused using rank reciprocal scoring ($k=60$) to eliminate scale distortions:
+4. **Hybrid Reciprocal Rank Fusion (RRF):** Dense cosine similarity and BM25 keyword matching are combined via rank reciprocal scoring. Candidate entities are fused using rank reciprocal scoring ($k=60$) to eliminate scale distortions:
    $$\text{RRF}(d) = \sum_{m \in \{\text{vector}, \text{bm25}\}} \frac{1}{60 + \text{rank}_m(d)}$$
 5. **Stratified 2-Hop Cypher Traversal:** Seed entities trigger bidirectional relationship discovery with cycle suppression ($s \ne t \land s \ne \text{mid} \land \text{mid} \ne t$) and hub degree suppression ($\le 50$), ensuring direct facts do not starve associative multi-hop insights.
 6. **Scale-Harmonized Composite Scoring:** Candidate paths are reranked using a normalized cross-encoder ($[0, 1]$), mean path confidence, exponential recency decay, and a single controlled hop penalty:
    $$\text{FinalScore}(P) = w_{\text{rel}} \cdot S_{\text{cross\_encoder}} + w_{\text{conf}} \cdot \overline{C}(P) + w_{\text{rec}} \cdot \text{Recency}(P) - \lambda_{\text{hop}} \cdot (\text{hops} - 1)$$
 7. **Verifiable Provenance Chains:** Every returned memory contains causal hop steps: `(Source) -[Predicate]-> (Target)` with confidence weights and verifiable citation tags (`[Scope: ..., Edge: ...]`).
 8. **Write-Time Contradiction Engine:** Fact proposals evaluate against a `PredicateRegistry` enforcing cardinality:
-   - **`ONE` (Functional):** Relations like `LIVES_IN` or `IS_CEO_OF`. A higher-confidence new fact supersedes existing active facts.
-   - **`MANY` (Relational):** Relations like `WORKS_FOR`, `OWNS`, or `HAS_ADMIN_ACCESS`. Multiple targets coexist happily.
-9. **Conservative Identity Resolution:** Auto-merges strictly on exact normalized name match. Fuzzy matches ($\ge 0.92$) generate `POSSIBLE_SAME_AS` candidate records for human or LLM review.
+   - **`ONE` (Functional):** Relations like `LIVES_IN`, `WORKS_FOR` (per ADR 0002), or `IS_CEO_OF`. A higher-confidence new fact supersedes existing active facts.
+   - **`MANY` (Relational):** Relations like `MEMBER_OF`, `CONTRIBUTES_TO`, `OWNS`, or `HAS_ADMIN_ACCESS`. Multiple targets coexist happily.
+9. **Conservative Identity Resolution:** Auto-merges strictly on exact normalized name match (`norm_name` unique constraint). Fuzzy matches ($\ge 0.92$) generate `POSSIBLE_SAME_AS` candidate records for human or LLM review.
 10. **Quote Verification:** Fact proposals with a citation quotation must match an exact substring in the source conversation turn, eliminating hallucinated attributions.
 
 ---
@@ -119,19 +119,19 @@ flowchart TD
 
 KryptoDB is continuously evaluated against a 50-query gold standard benchmark suite (`tests/eval/queries.jsonl`) featuring complex multi-hop queries, synonyms, exact entities, conversation recall, superseded facts, negative queries, and tenant isolation:
 
-| Metric | Phase 0 Baseline | Phase 8 Final | Status | Delta |
+| Metric | Phase 0 Baseline | Final Benchmark | Status | Delta |
 | :--- | :--- | :--- | :--- | :--- |
-| **Overall Mean Recall@10** | 0.7455 | **0.8403** | ✅ Passed | **+9.48%** |
-| **Overall Mean Precision@10**| 0.3840 | **0.4860** | ✅ Passed | **+10.20%** |
-| **Overall Mean nDCG@10** | 0.9960 | **1.2273** | ✅ Passed | **+23.13%** |
-| **Overall Mean MRR** | 0.7462 | **0.8800** | ✅ Passed | **+13.38%** |
-| **Multi-Hop Recall@10** | 0.5425 | **0.7500** | ✅ Passed | **+20.75%** |
-| **Multi-Hop Precision@10** | 0.5500 | **0.8300** | ✅ Passed | **+28.00%** |
-| **Multi-Hop MRR** | 0.6667 | **1.0000** | ✅ Passed | **+33.33%** |
-| **Synonym Recall@10** | 0.7833 | **0.9000** | ✅ Passed | **+11.67%** |
-| **Conversation Recall@10** | 0.7167 | **0.8833** | ✅ Passed | **+16.66%** |
-| **p50 Latency (ms)** | 0.32 ms | 0.44 ms | ✅ High-Throughput | +0.12 ms |
-| **p95 Latency (ms)** | 0.46 ms | 0.74 ms | ✅ High-Throughput | +0.28 ms |
+| **Overall Mean Recall@10** | 0.7455 | **0.7270** | ✅ Validated | **-2.48%** |
+| **Overall Mean Precision@10**| 0.3840 | **0.3998** | ✅ Passed | **+4.11%** |
+| **Overall Mean nDCG@10** | 0.9960 *(pre-dedup)* | **0.7091** *(deduped)* | ✅ Fixed [0, 1] | Deduped |
+| **Overall Mean MRR** | 0.7462 | **0.7833** | ✅ Passed | **+4.97%** |
+| **Multi-Hop Recall@10** | 0.5425 | **0.6700** | ✅ Passed | **+23.50%** |
+| **Multi-Hop Precision@10** | 0.5500 | **0.7550** | ✅ Passed | **+37.27%** |
+| **Multi-Hop MRR** | 0.6667 | **0.8000** | ✅ Passed | **+20.00%** |
+| **Synonym Recall@10** | 0.7833 | **0.7667** | ✅ Validated | **-2.12%** |
+| **Conversation Recall@10** | 0.7167 | **0.4167** | ⚠️ Needs multi-turn tuning | -41.86% |
+| **p50 Latency (ms)** *(all-MiniLM-L6-v2 CPU)* | 0.32 ms *(fake)* | **33.20 ms** *(real)* | ✅ Unmocked CPU | Production |
+| **p95 Latency (ms)** *(all-MiniLM-L6-v2 CPU)* | 0.46 ms *(fake)* | **84.61 ms** *(real)* | ✅ Unmocked CPU | Production |
 
 Run the retrieval benchmark locally:
 ```bash
@@ -195,8 +195,8 @@ NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=password
 REDIS_URL=redis://localhost:6379/0
-KRYPTODB_ADMIN_API_KEY=dev-admin-key
-RETRIEVAL_MODE=new
+# Fail-closed administrative master key (mandatory; server refuses startup if unset)
+KRYPTODB_ADMIN_API_KEY=<generate-with-python-secrets-token-urlsafe-32>
 GEMINI_API_KEY=your_gemini_api_key
 LLM_MODEL=gemini-2.5-flash-lite
 ```
@@ -328,7 +328,7 @@ KryptoDB provides a first-class FastMCP server for direct tool-use by LLM agents
       ],
       "env": {
         "AGENT_ID": "Agent-1",
-        "KRYPTODB_ADMIN_API_KEY": "dev-admin-key",
+        "KRYPTODB_API_KEY": "<YOUR_API_KEY>",
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
         "NEO4J_PASSWORD": "password"
@@ -347,7 +347,7 @@ KryptoDB provides a first-class FastMCP server for direct tool-use by LLM agents
       "args": ["run", "python", "-m", "kryptodb.interfaces.mcp.server"],
       "env": {
         "AGENT_ID": "cursor-agent",
-        "KRYPTODB_ADMIN_API_KEY": "dev-admin-key"
+        "KRYPTODB_API_KEY": "<YOUR_API_KEY>"
       }
     }
   }
@@ -364,10 +364,11 @@ kryptodb/
     mcp/            # FastMCP server & tool definitions (thin adapter)
     http/           # FastAPI routes (/v1, healthz), middleware, schemas
   core/
-    context.py      # RequestContext (tenant, agent, scopes)
+    context.py      # RequestContext (tenant, agent, role, scopes, permissions)
     filters.py      # FilterBuilder: the centralized choke point for all Cypher queries
     observability.py# OpenTelemetry tracer configuration
     ports.py        # Core Protocols: MemoryStore, EventStore, Embedder, Reranker
+    identity/       # PolicyEngine (RBAC & scope gating), Authenticator (SQLite key store)
     memory/         # MemoryService, lifecycle state machine, conflict engine,
                     # predicate registry, entity resolution, write policy
     retrieval/      # RetrievalService, hybrid search (RRF), cycle-safe traversal,
@@ -375,28 +376,27 @@ kryptodb/
     episodic/       # Episodic events and conversation summaries
     embeddings/     # Resilient embedder, versioning, failure queue
   infrastructure/
-    neo4j/          # Client, schema (indexes), Cypher queries, Neo4jStore
+    neo4j/          # Client, schema (indexes), Cypher queries, Neo4jStore, EncryptedStore
     redis/          # Redis client and cache
-  workers/          # Background embedding retry worker
+    crypto/         # Keyring, AES-256-GCM envelope, HMAC blind indexing, RAMVectorIndex
+    audit_ledger.py # Tamper-evident SHA-256 append-only hash-chained audit ledger
+  workers/          # Background embedding retry worker & plaintext audit scanner
   agent_runtime/
     langgraph/      # LangGraph state graph and checkpointer (optional runtime adapter)
-  legacy/
-    crypto/         # Backward-compatibility test fixtures and shims
   daemon/           # FastAPI application factory (app.py)
 tests/
-  unit/             # Modular unit tests (agent state graph, retrieval, memory lifecycle)
+  unit/             # Modular unit tests (security gates, crypto v3, memory lifecycle)
   integration/      # Ingress contract parity, multi-thread scope isolation
-  eval/             # 50-query gold benchmark, 8-tier (T0-T7) suite, stateful E2E validation
+  eval/             # 50-query gold benchmark, strict Llama-3.3 evaluation suite
 scripts/
-  migrate_to_plaintext.py # Data migration script
   run_eval_benchmark.py   # Benchmark evaluation runner
+  eval_ablations.py       # Multi-hop GraphRAG ablation runner (Vector vs Hybrid vs Graph)
   eval_kryptodb_strict.py # Strict 5-test autonomous evaluation suite
 docs/
   ARCHITECTURE.md   # Authoritative system architecture specification
   FILE_CATALOG.md   # Exhaustive file-by-file directory reference
-  phases/           # Detailed phase-by-phase implementation records (Phases 0 - 9)
-  MIGRATION_MAP.md  # Old -> New module mapping
-  SHORTCOMINGS_AND_LESSONS_LEARNED.md # Engineering failure modes & architectural post-mortems
+  audit/            # Threat model, benchmarks audit, failure modes, patch plan
+  adr/              # Architecture Decision Records (ADR 0001, ADR 0002)
 ```
 
 ---

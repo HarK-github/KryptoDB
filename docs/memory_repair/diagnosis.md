@@ -17,7 +17,7 @@ An investigation was conducted to diagnose the critical failures observed during
 5. **Recall count explosion** ($6 \to 8 \to 12$) caused by cumulative state retention and feedback loop of synthetic query edges.
 6. **Misleading UI messages** (declined writes labeled as `"recall denied"`).
 
-All six root causes have been identified with exact code references and reproduced via [scripts/replay_transcript.py](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/scripts/replay_transcript.py).
+All six root causes have been identified with exact code references and reproduced via [scripts/replay_transcript.py](../scripts/replay_transcript.py).
 
 ---
 
@@ -27,7 +27,7 @@ All six root causes have been identified with exact code references and reproduc
 
 **Finding:** It is currently a brittle hybrid spread across multiple layers:
 1. First, an LLM call or naive regex fallback in `create_intent_classifier_node`:
-   [graph.py:576-589](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py#L576-L589):
+   [graph.py:576-589](../kryptodb/agent_runtime/langgraph/graph.py#L576-L589):
    ```python
    # Fallback when llm is None (or fails)
    has_question = "?" in latest_clean or any(w in lowered for w in ("what ", "where ", "who ", "how ", "can you "))
@@ -41,7 +41,7 @@ All six root causes have been identified with exact code references and reproduc
        inquiry_t = " ".join(q_parts) if q_parts else latest_clean
        info_t = " ".join(s_parts) if s_parts else latest_clean
    ```
-2. Second, in `extract_facts_from_messages` [graph.py:232-260](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py#L232-L260):
+2. Second, in `extract_facts_from_messages` [graph.py:232-260](../kryptodb/agent_runtime/langgraph/graph.py#L232-L260):
    It uses greedy regexes like:
    ```python
    rel_patterns = [
@@ -53,7 +53,7 @@ All six root causes have been identified with exact code references and reproduc
    For `"harshit kandpal lives in india and he is very interesting person, lfx entee too"`, the regex matched `group(1)="Harshit Kandpal"`, `predicate="LIVES_IN"`, and captured everything else into `group(3)="india and he is very interesting person, lfx entee too"`.
 
 3. Finally, when neither the prompt nor the regex produces triples, it falls back to:
-   [graph.py:293-301](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py#L293-L301):
+   [graph.py:293-301](../kryptodb/agent_runtime/langgraph/graph.py#L293-L301):
    ```python
    fact = FactItem(
        subject=agent_id,
@@ -70,11 +70,11 @@ All six root causes have been identified with exact code references and reproduc
 ### 2. Is the user's question text ever written as a fact? Which function writes it?
 
 **Finding:** **YES.**
-1. In `extract_facts_from_messages()` ([graph.py:293-301](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py#L293-L301)):
+1. In `extract_facts_from_messages()` ([graph.py:293-301](../kryptodb/agent_runtime/langgraph/graph.py#L293-L301)):
    When a user query is not filtered out or is treated as a statement, `clean_query` is placed directly into:
    `description=f"Extracted fact for query '{clean_query}'"`
    with `predicate="PROCESSED_QUERY"`.
-2. In `create_extraction_node()` ([graph.py:884-889](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py#L884-L889)):
+2. In `create_extraction_node()` ([graph.py:884-889](../kryptodb/agent_runtime/langgraph/graph.py#L884-L889)):
    If `extract_facts_from_messages` returns empty, the fallback creates:
    ```python
    candidate = extracted_facts[0] if extracted_facts else {
@@ -84,7 +84,7 @@ All six root causes have been identified with exact code references and reproduc
        "scope": state.user_scope
    }
    ```
-3. `create_direct_write_node()` ([graph.py:974-988](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py#L974-L988)) issues a tool call:
+3. `create_direct_write_node()` ([graph.py:974-988](../kryptodb/agent_runtime/langgraph/graph.py#L974-L988)) issues a tool call:
    `propose_fact_tool(subject, predicate, obj, scope, description)`
    which calls `POST /memory`, executing `write_fact()` to create a `(:Entity)-[:FACT]->(:Entity)` relationship in Neo4j containing the entire raw query text in `r.description`.
 
@@ -93,7 +93,7 @@ All six root causes have been identified with exact code references and reproduc
 ### 3. Are assistant messages ever used as a source for proposed facts or ever written to the graph?
 
 **Finding:** **YES.**
-In `extract_facts_from_messages()` ([graph.py:189-220](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py#L189-L220)):
+In `extract_facts_from_messages()` ([graph.py:189-220](../kryptodb/agent_runtime/langgraph/graph.py#L189-L220)):
 ```python
 if target_text and target_text.strip():
     clean_query = target_text.strip()
@@ -115,7 +115,7 @@ In Turn 2, `messages_to_use` contained that `AIMessage`. The LLM extractor read 
 
 **Finding:** Two root causes compound this:
 1. **Cumulative State Accumulation Bug in `graph.py`:**
-   In [graph.py:743-748](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py#L743-L748):
+   In [graph.py:743-748](../kryptodb/agent_runtime/langgraph/graph.py#L743-L748):
    ```python
    combined_facts = list(state.recalled_facts or []) + parsed_facts
    return {
@@ -135,7 +135,7 @@ In Turn 2, `messages_to_use` contained that `AIMessage`. The LLM extractor read 
    - `fact-87b00ff622f0`: `test-agent PROCESSED_QUERY scope:research` (description: *"Extracted fact for query 'I am looking for a vegetarian meal plan for two people'"*)
    - `fact-d7205729a042`: `vegetarian meal FOR_TWO_PEOPLE value`
 
-Because 2-hop traversal ([traversal.py:104-121](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/traversal.py#L104-L121)) links through shared hub entities (like `value` or `Harshit`), each query unearths both the direct facts and the synthetic query nodes, expanding the result set turn-by-turn.
+Because 2-hop traversal ([traversal.py:104-121](../kryptodb/core/retrieval/traversal.py#L104-L121)) links through shared hub entities (like `value` or `Harshit`), each query unearths both the direct facts and the synthetic query nodes, expanding the result set turn-by-turn.
 
 ---
 
@@ -143,7 +143,7 @@ Because 2-hop traversal ([traversal.py:104-121](file:///mnt/DE94962594960067/Use
 
 **Finding:** Through two distinct search mechanics:
 1. **Fulltext Lucene Prefix Wildcard:**
-   In [hybrid_search.py:142](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/hybrid_search.py#L142):
+   In [hybrid_search.py:142](../kryptodb/core/retrieval/hybrid_search.py#L142):
    ```python
    clean_terms = [t for t in safe_lucene.split() if t.lower() not in STOP_WORDS and len(t) > 1]
    lucene_query = " OR ".join([f"{term}*" for term in clean_terms]) if clean_terms else "*"
@@ -152,7 +152,7 @@ Because 2-hop traversal ([traversal.py:104-121](file:///mnt/DE94962594960067/Use
    `lucene_query` becomes `"harshi*"`.
    In Neo4j's Lucene fulltext index (`entity_name_ft`), the wildcard `"harshi*"` matches `"harshit"` and `"harshit kandpal"`.
 2. **Lexical Reranker Substring Match:**
-   In [ranking.py:75-81](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/ranking.py#L75-L81):
+   In [ranking.py:75-81](../kryptodb/core/retrieval/ranking.py#L75-L81):
    ```python
    for q in q_tokens:
        if len(q) >= 4:
@@ -162,7 +162,7 @@ Because 2-hop traversal ([traversal.py:104-121](file:///mnt/DE94962594960067/Use
    ```
    `"harshit".startswith("harshi")` is `True`, giving `"harshit"` an inflated prefix-match score of 0.31.
 3. **No Minimum Relevance Cutoff:**
-   In [service.py:122](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/service.py#L122):
+   In [service.py:122](../kryptodb/core/retrieval/service.py#L122):
    `return ranked_results[:top_k]` returns the top-k results unconditionally, even if the score is low (e.g. 0.05 - 0.31) and completely irrelevant.
 
 ---
@@ -170,7 +170,7 @@ Because 2-hop traversal ([traversal.py:104-121](file:///mnt/DE94962594960067/Use
 ### 6. What exactly is injected into the agent prompt, and how is it labeled?
 
 **Finding:**
-In [graph.py:808-825](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py#L808-L825):
+In [graph.py:808-825](../kryptodb/agent_runtime/langgraph/graph.py#L808-L825):
 ```python
 system_prompt = (
     f"You are KryptoDB Agent ({state.agent_id}), an assistant whose factual source is KryptoDB's knowledge graph.\n"
@@ -203,7 +203,7 @@ system_prompt += (
 
 ### 7. Misleading UI Messages
 
-In [ui/src/app/ChatPopup.tsx](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/ui/src/app/ChatPopup.tsx#L484-L502):
+In [ui/src/app/ChatPopup.tsx](../ui/src/app/ChatPopup.tsx#L484-L502):
 ```tsx
 const handleReject = async () => {
     setPendingState('rejected')
@@ -213,13 +213,13 @@ const handleReject = async () => {
         { id: String(Date.now() + 1), role: 'agent', text: 'Fact write rejected by human reviewer. Memory graph remains unchanged.' }
     ])
 ```
-And in rendering [ChatPopup.tsx:770](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/ui/src/app/ChatPopup.tsx#L770):
+And in rendering [ChatPopup.tsx:770](../ui/src/app/ChatPopup.tsx#L770):
 ```tsx
 ↳ {msg.type === 'recalled' ? `recalled ${msg.count || 1} fact${(msg.count || 1) > 1 ? 's' : ''}` : 'recall denied'}
 ```
 Because the UI assumes any system message that is not `type === 'recalled'` must be a `"recall denied"`, when a user rejects a write, it renders:
 `↳ recall denied, reason: user_declined`.
-Furthermore, upon approval ([ChatPopup.tsx:469](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/ui/src/app/ChatPopup.tsx#L469)), it outputs the static text `"Fact successfully authorized and committed to graph memory."` without specifying what fact was actually committed.
+Furthermore, upon approval ([ChatPopup.tsx:469](../ui/src/app/ChatPopup.tsx#L469)), it outputs the static text `"Fact successfully authorized and committed to graph memory."` without specifying what fact was actually committed.
 
 ---
 

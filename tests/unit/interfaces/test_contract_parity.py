@@ -1,6 +1,9 @@
-"""Contract parity tests: Asserting identical service calls and compatible JSON shapes between FastMCP and REST."""
-
 from __future__ import annotations
+
+import os
+os.environ["KRYPTODB_ADMIN_API_KEY"] = "test-admin-key"
+os.environ["KRYPTODB_API_KEY"] = "test-admin-key"
+"""Contract parity tests: Asserting identical service calls and compatible JSON shapes between FastMCP and REST."""
 
 import json
 from unittest.mock import patch
@@ -16,6 +19,7 @@ from kryptodb.interfaces.mcp.server import (
 )
 
 client = TestClient(app)
+client.headers.update({"Authorization": "Bearer test-admin-key"})
 
 
 @patch("kryptodb.interfaces.http.routes.v1_routes.memory_service.propose_memory")

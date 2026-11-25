@@ -1,7 +1,10 @@
 """
 Neo4j Community Edition connection.
 """
-from neo4j import GraphDatabase
+try:
+    from neo4j import GraphDatabase
+except ImportError:
+    GraphDatabase = None  # type: ignore
 import os
 
 class Neo4jClient:

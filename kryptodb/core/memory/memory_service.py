@@ -14,8 +14,7 @@ from kryptodb.core.memory.models import MemoryRecord, MemoryStatus, MemoryType
 from kryptodb.core.memory.predicates import predicate_registry
 from kryptodb.core.memory.write_policy import validate_proposal
 from kryptodb.core.ports import EventStore, MemoryStore
-from kryptodb.infrastructure.neo4j.client import neo4j_client
-from kryptodb.infrastructure.neo4j.store import Neo4jMemoryStore
+# Neo4j adapter is lazy-loaded inside MemoryService.__init__ to keep core/ decoupled from infrastructure.
 
 logger = logging.getLogger("kryptodb.core.memory.service")
 
@@ -30,8 +29,18 @@ class MemoryService:
         conflict_engine: Optional[ConflictEngine] = None,
         client: Any = None,
     ):
-        self.client = client or neo4j_client
-        neo_store = Neo4jMemoryStore(client=self.client) if not store else store
+        if store is not None:
+            self.client = client
+            neo_store = store
+        else:
+            try:
+                from kryptodb.infrastructure.neo4j.client import neo4j_client
+                from kryptodb.infrastructure.neo4j.store import Neo4jMemoryStore
+                self.client = client or neo4j_client
+                neo_store = Neo4jMemoryStore(client=self.client)
+            except ImportError:
+                self.client = client
+                neo_store = None
         self.store: MemoryStore = store or neo_store
         self.event_store: Optional[EventStore] = event_store or (neo_store if isinstance(neo_store, EventStore) else None)
         self.conflict_engine: ConflictEngine = conflict_engine or ConflictEngine(self.store)
@@ -86,6 +95,15 @@ class MemoryService:
                 if existing:
                     return existing
                 # Fallback to creating if lookup failed
+                version = eval_res.version
+
+            elif eval_res.action == ConflictAction.FLAG_CONFLICT:
+                logger.info(
+                    "Low-confidence proposal (%s, %s, %s, conf=%.2f) flagged as conflict against %s.",
+                    subject, norm_pred, obj, confidence, eval_res.existing_fact_id,
+                )
+                status = MemoryStatus.CONFLICTED if hasattr(MemoryStatus, "CONFLICTED") else MemoryStatus.STAGED
+                previous_version_id = None
                 version = eval_res.version
 
             elif eval_res.action == ConflictAction.SUPERSEDE_AND_CREATE:
@@ -201,8 +219,6 @@ class MemoryService:
             raise ValueError(f"Memory with id '{id}' not found or inaccessible.")
 
         new_fact_id = f"fact-{uuid.uuid4().hex[:12]}"
-        self.store.supersede(id, new_fact_id, context)
-
         new_record = old_fact.model_copy(
             update={
                 "id": new_fact_id,
@@ -215,6 +231,9 @@ class MemoryService:
                 "valid_until": None,
             }
         )
+        if hasattr(self.store, "atomic_supersede"):
+            return self.store.atomic_supersede(id, new_record, context)
+        self.store.supersede(id, new_fact_id, context)
         return self.store.write_fact(new_record, context)
 
     def forget_memory(self, id: str, context: RequestContext) -> None:
@@ -231,11 +250,11 @@ class MemoryService:
         ctx = create_system_context(tenant_id=tenant_id)
         self.store.supersede(old_fact_id, f"superseded-by-{uuid.uuid4().hex[:8]}", ctx)
 
-    def revoke_fact(self, fact_id: str, tenant_id: str = "default") -> bool:
-        """Compatibility helper for revoking facts."""
-        ctx = create_system_context(tenant_id=tenant_id)
-        self.store.revoke(fact_id, ctx)
-        return True
+    def revoke_fact(self, fact_id: str, tenant_id: str = "default", context: Optional[RequestContext] = None) -> bool:
+        """Revokes a fact respecting the caller's RequestContext scopes (or system context when omitted)."""
+        ctx = context or create_system_context(tenant_id=tenant_id)
+        res = self.store.revoke(fact_id, ctx)
+        return True if res is None else bool(res)
 
 
 memory_service = MemoryService()

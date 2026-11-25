@@ -1,11 +1,24 @@
-from .session_context import SessionContext, SessionManager, session_manager
-from .authentication import Authenticator, authenticator, require_auth
+from .session_context import SessionManager, session_manager, SessionContext
+from .authentication import Authenticator, authenticator
+from .policy import (
+    PolicyEngine,
+    PolicyDeniedError,
+    PolicyConfig,
+    AgentPolicyEntry,
+    load_policy_config,
+    policy_engine,
+)
 
 __all__ = [
-    "SessionContext",
     "SessionManager",
     "session_manager",
+    "SessionContext",
     "Authenticator",
     "authenticator",
-    "require_auth"
+    "PolicyEngine",
+    "PolicyDeniedError",
+    "PolicyConfig",
+    "AgentPolicyEntry",
+    "load_policy_config",
+    "policy_engine",
 ]

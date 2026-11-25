@@ -1,36 +1,60 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# KryptoDB Web Console & WebGL Graph Visualizer
+
+The frontend for **KryptoDB**: an interactive, WebGL-accelerated operational console and real-time knowledge graph visualizer built with **Next.js 16 (Turbopack)**, **React 19**, and **Sigma.js**.
+
+---
+
+## Features
+
+* **WebGL Knowledge Graph Explorer:** Hardware-accelerated graph rendering using Sigma.js and Graphology with ForceAtlas2 physics layouts. Visualizes active `:FACT` relationships, temporal validity, and node clusters.
+* **Multi-Agent Chat & HITL Approvals:** Real-time chat interface connected to the KryptoDB LangGraph agent runtime. Renders Human-in-the-Loop (HITL) approval cards for sensitive scope proposals (`CONFIDENTIAL`, `RESTRICTED`, `PII`).
+* **Interactive Playground:** Debug queries, execute hybrid search (Dense Vector + BM25 Lexical + 2-Hop Graph Traversal), inspect provenance paths, and manage agent API keys.
+* **Audit Trail Viewer:** Real-time inspection of the tamper-evident SHA-256 hash-chained audit ledger (`data/audit.db`).
+
+---
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+* **Node.js**: v20.x or higher
+* **npm** or **pnpm**
+* **KryptoDB Daemon**: Running locally on port `8000` (default)
+
+### 1. Installation
+
+```bash
+cd ui
+npm install
+```
+
+### 2. Configuration
+
+Create or edit `.env.local` if running outside the default localhost ports:
+
+```bash
+# URL of the KryptoDB FastAPI daemon (default: http://localhost:8000)
+NEXT_PUBLIC_KRYPTODB_URL=http://localhost:8000
+```
+
+> [!NOTE]
+> In production and Docker standalone mode, `NEXT_PUBLIC_KRYPTODB_URL` can be left empty (`""`), as Next.js rewrites `/api/*` and WebSocket traffic directly to the backend.
+
+### 3. Running in Development
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Authentication & API Keys
 
-## Learn More
+KryptoDB enforces fail-closed authentication. To connect the UI to your local database:
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Copy the admin key generated during backend setup (`KRYPTODB_ADMIN_API_KEY`).
+2. Open the console at [http://localhost:3000](http://localhost:3000).
+3. Click the **Connect / Settings** icon in the top-right corner.
+4. Paste your key into the API Key input. It will be stored in your browser's `localStorage` (`kryptodb_api_key`) and automatically sent as `Authorization: Bearer <KEY>` on all REST and WebSocket requests.

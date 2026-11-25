@@ -10,7 +10,7 @@ import {
 const API_BASE = process.env.NEXT_PUBLIC_KRYPTODB_URL || (typeof window !== 'undefined' ? `http://${window.location.hostname}:8000` : 'http://127.0.0.1:8000')
 
 function apiFetch(path: string, init: RequestInit = {}) {
-    const apiKey = typeof window !== 'undefined' ? (window.localStorage.getItem('kryptodb_api_key') || 'dev-admin-key') : 'dev-admin-key'
+    const apiKey = typeof window !== 'undefined' ? (window.localStorage.getItem('kryptodb_api_key') || '') : ''
     const headers = new Headers(init.headers)
     if (apiKey) headers.set('Authorization', `Bearer ${apiKey}`)
     return fetch(`${API_BASE}${path}`, { ...init, headers })

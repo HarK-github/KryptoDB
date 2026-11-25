@@ -42,8 +42,9 @@ flowchart TD
         Middleware["Context Middleware<br/>(X-Tenant-ID, X-Scopes, Bearer Auth)"]
     end
 
-    subgraph CoreSecurity ["Security & Filter Choke Point"]
-        RequestContext["RequestContext<br/>(tenant, agent, user, scopes, now)"]
+    subgraph CoreSecurity ["Security, Policy & Filter Choke Point"]
+        PolicyEngine["PolicyEngine & Authenticator<br/>(RBAC, persistent SQLite api_keys.db)"]
+        RequestContext["RequestContext<br/>(tenant, agent, role, scopes, perms, is_system)"]
         FilterBuilder["FilterBuilder<br/>(Cypher WHERE clause choke point)"]
     end
 
@@ -92,7 +93,7 @@ flowchart TD
 
 ### 3.1. Security & The Choke Point Architecture
 
-Every request flowing into KryptoDB is parsed into an immutable, frozen [`RequestContext`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/context.py).
+Every request flowing into KryptoDB is parsed into an immutable, frozen [`RequestContext`](../kryptodb/core/context.py).
 
 #### The RequestContext Dataclass
 - `tenant_id`: Mandatory tenant boundary.
@@ -104,7 +105,7 @@ Every request flowing into KryptoDB is parsed into an immutable, frozen [`Reques
 - `is_system`: Bypass flag for privileged administrative indexing and maintenance.
 
 #### The FilterBuilder Guarantee
-[`FilterBuilder.build(context, alias="r")`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/filters.py) is the **single choke point** through which all Cypher read and search queries must pass. It returns a parameterized Cypher clause:
+[`FilterBuilder.build(context, alias="r")`](../kryptodb/core/filters.py) is the **single choke point** through which all Cypher read and search queries must pass. It returns a parameterized Cypher clause:
 ```cypher
 r.tenant_id = $tenant_id
 AND r.status = 'active'
@@ -147,22 +148,22 @@ sequenceDiagram
 ```
 
 #### Core Components
-1. **[`TurnAnalyzer`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/memory/turn_analysis.py)**: Breaks complex user inputs into discourse segments (`STATEMENT`, `QUESTION`, `PREFERENCE`, `OPINION`, `COMMAND`, `CHITCHAT`). Questions are routed to retrieval queries and never marked as durable.
-2. **[`WritePolicy`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/memory/write_policy.py)**: Enforces write integrity:
+1. **[`TurnAnalyzer`](../kryptodb/core/memory/turn_analysis.py)**: Breaks complex user inputs into discourse segments (`STATEMENT`, `QUESTION`, `PREFERENCE`, `OPINION`, `COMMAND`, `CHITCHAT`). Questions are routed to retrieval queries and never marked as durable.
+2. **[`WritePolicy`](../kryptodb/core/memory/write_policy.py)**: Enforces write integrity:
    - Verbatim quote substring verification against raw turn text.
    - Rejection of synthetic/placeholder entities (`Object`, `None`, `Unknown`, `value`).
    - Rejection of non-user source roles (preventing assistant hallucination feedback).
    - Rejection of speculative or hypothetical statements.
-3. **[`DeltaExtractor`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/memory/delta_extractor.py)**: Takes active entity subgraph priors and conversation history to extract relative deltas (e.g., database upgrades, date shifts like *"push back 10 days"*, and pronoun coreferences).
-4. **[`EntityResolver`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/memory/entity_resolution.py)**: Employs conservative identity resolution:
+3. **[`DeltaExtractor`](../kryptodb/core/memory/delta_extractor.py)**: Takes active entity subgraph priors and conversation history to extract relative deltas (e.g., database upgrades, date shifts like *"push back 10 days"*, and pronoun coreferences).
+4. **[`EntityResolver`](../kryptodb/core/memory/entity_resolution.py)**: Employs conservative identity resolution:
    - Auto-merges strictly on exact normalized name matching (`norm_name`).
    - Near matches ($\ge 0.70$ edit distance or prefix overlap) produce `POSSIBLE_SAME_AS` candidates and prompt clarifications (*"Did you mean Alice Chen?"*), never auto-merging.
-5. **[`PredicateRegistry`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/memory/predicates.py)**: Manages semantic predicates and cardinality:
-   - **`Cardinality.ONE` (Functional)**: e.g., `LIVES_IN`, `RUNS`, `LEAD_ARCHITECT`. New incoming facts supersede older active facts.
-   - **`Cardinality.MANY` (Relational)**: e.g., `USES`, `DEPLOYED_ON`, `WORKS_FOR`. Multiple target entities coexist.
+5. **[`PredicateRegistry`](../kryptodb/core/memory/predicates.py)**: Manages semantic predicates and cardinality:
+   - **`Cardinality.ONE` (Functional)**: e.g., `LIVES_IN`, `WORKS_FOR` (per ADR 0002), `RUNS_ENGINE`, `LEAD_ARCHITECT`, `USES`, `DEPLOYED_ON`. New incoming higher-confidence facts supersede older active facts.
+   - **`Cardinality.MANY` (Relational)**: e.g., `MEMBER_OF`, `CONTRIBUTES_TO`, `OWNS`, `HAS_SKILL`. Multiple target entities coexist.
    - **Dynamic Schema Evolution**: Unseen predicates are auto-registered with `Cardinality.MANY` or inferred cardinality without schema crashes.
-6. **[`ConflictEngine`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/memory/conflicts.py)**: Detects contradictions between existing active facts and new proposals, executing atomic supersession transitions.
-7. **[`RejectionStore`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/memory/rejection_store.py)**: Tracks human reviewer rejections by hash `(agent_id, subject, predicate, object, scope)` to ensure declined proposals are never re-proposed.
+6. **[`ConflictEngine`](../kryptodb/core/memory/conflicts.py)**: Detects contradictions between existing active facts and new proposals, executing atomic supersession transitions.
+7. **[`RejectionStore`](../kryptodb/core/memory/rejection_store.py)**: Tracks human reviewer rejections by hash `(agent_id, subject, predicate, object, scope)` to ensure declined proposals are never re-proposed.
 
 ---
 
@@ -194,22 +195,22 @@ flowchart LR
 ```
 
 #### Core Components
-1. **[`QueryParser`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/query.py)**: Deterministic, sub-millisecond query parsing extracting cleaned tokens, quoted terms, and temporal keywords (`"previously"`, `"history"`, `"before"`).
-2. **[`HybridSearchEngine`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/hybrid_search.py)**:
+1. **[`QueryParser`](../kryptodb/core/retrieval/query.py)**: Deterministic, sub-millisecond query parsing extracting cleaned tokens, quoted terms, and temporal keywords (`"previously"`, `"history"`, `"before"`).
+2. **[`HybridSearchEngine`](../kryptodb/core/retrieval/hybrid_search.py)**:
    - Queries `entity_embedding_idx` (dense cosine similarity).
    - Queries `entity_name_ft` (Lucene BM25).
-   - Fuses rankings using [`reciprocal_rank_fusion`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/rrf.py):
+   - Fuses rankings using [`reciprocal_rank_fusion`](../kryptodb/core/retrieval/rrf.py):
      $$\text{RRF}(d) = \sum_{m \in \{\text{vector}, \text{bm25}\}} \frac{1}{60 + \text{rank}_m(d)}$$
    - **Semantic Seed Fallback**: When queries have zero lexical overlap with entity names (e.g. associative questions), it falls back to cosine similarity over entity and relationship embeddings in the active scope.
-3. **[`MultiHopTraverser`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/traversal.py)**:
+3. **[`MultiHopTraverser`](../kryptodb/core/retrieval/traversal.py)**:
    - **1-Hop Expansion**: Discovers direct incoming and outgoing facts.
    - **2-Hop Associative Expansion**: Traverses through intermediate nodes with strict cycle suppression:
      $$s \ne t \land s \ne \text{mid} \land \text{mid} \ne t \land e_1 \ne e_2$$
    - **Hub Suppression**: Automatically prunes high-degree hub nodes ($\text{degree} > 50$) to avoid context dilution from dense distractor entities.
-4. **[`PathReranker`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/ranking.py)**: Combines multiple signals into a normalized score:
+4. **[`PathReranker`](../kryptodb/core/retrieval/ranking.py)**: Combines multiple signals into a normalized score:
    $$\text{FinalScore}(P) = w_{\text{rel}} \cdot S_{\text{cross\_encoder}} + w_{\text{conf}} \cdot \overline{C}(P) + w_{\text{rec}} \cdot \text{Recency}(P) - \lambda_{\text{hop}} \cdot (\text{hops} - 1)$$
    Candidates scoring below `recall_relevance_cutoff` ($0.20$) are pruned.
-5. **[`MemoryContextBuilder`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/core/retrieval/memory_context.py)**: Constructs structured `<retrieved_memories>` prompt injection blocks with standardized citations (`[Scope: ..., Edge: ...]`), preventing LLMs from confusing stored facts with immediate user statements.
+5. **[`MemoryContextBuilder`](../kryptodb/core/retrieval/memory_context.py)**: Constructs structured `<retrieved_memories>` prompt injection blocks with standardized citations (`[Scope: ..., Edge: ...]`), preventing LLMs from confusing stored facts with immediate user statements.
 
 ---
 
@@ -217,13 +218,13 @@ flowchart LR
 
 #### Neo4j Graph Model
 - **`:Entity` Nodes**: Represent real-world entities (people, projects, databases, environments).
-  - Properties: `id`, `name`, `tenant_id`, `embedding` (384-dim vector), `created_at`, `updated_at`.
+  - Properties: `id`, `name`, `norm_name` (NFKC casefold canonical identifier), `tenant_id`, `embedding` (384-dim vector), `created_at`, `updated_at`.
 - **`[:FACT]` Relationships**: Directed semantic facts connecting entities `(s:Entity)-[:FACT]->(o:Entity)`.
-  - Properties: `id`, `predicate`, `description`, `confidence`, `trust_weight`, `scope`, `tenant_id`, `status` (`active` | `superseded` | `revoked`), `version`, `previous_version_id`, `superseded_by`, `valid_from`, `valid_until`, `created_at`, `source_agent_id`.
+  - Properties: `id`, `predicate`, `description`, `confidence`, `trust_weight`, `scope`, `tenant_id`, `user_id`, `status` (`active` | `superseded` | `revoked`), `version`, `previous_version_id`, `superseded_by`, `valid_from`, `valid_until`, `created_at`, `source_agent_id`, `idempotency_key`.
 - **`:Event` Nodes**: Episodic conversation turns.
 - **`:Episode` Nodes**: Consolidated multi-turn conversation summaries.
 
-#### Native Indexes in Neo4j
+#### Native Indexes & Constraints in Neo4j
 - **Vector Indexes**:
   - `entity_embedding_idx`: 384-dim Cosine index on `(:Entity).embedding`
   - `fact_embedding_idx`: 384-dim Cosine index on `[:FACT].embedding`
@@ -231,19 +232,26 @@ flowchart LR
   - `entity_name_ft`: Fulltext index on `(:Entity).name`
   - `fact_text_ft`: Fulltext index on `[:FACT].description`
 - **Uniqueness & Lookup Constraints**:
+  - `entity_tenant_norm_name_unique`: Unique `(tenant_id, norm_name)` on `:Entity`
   - `constraint_entity_name_tenant`: Unique `(name, tenant_id)` on `:Entity`
   - `constraint_fact_id_tenant`: Unique `(id, tenant_id)` on `[:FACT]`
   - `index_entity_tenant`: B-tree index on `(:Entity).tenant_id`
   - `index_fact_tenant_status`: Composite index on `[:FACT].(tenant_id, status)`
 
+#### Concurrency & Write Locking
+All fact creations in `WRITE_FACT_QUERY` acquire a transactional write lock on the subject entity node (`SET s._write_lock = true ... REMOVE s._write_lock`). This serializes concurrent writes for `Cardinality.ONE` relationships, completely preventing race conditions and duplicate first writes across parallel agents.
+
 #### Centralized Queries Module
-All Cypher interactions are centralized in [`kryptodb/infrastructure/neo4j/queries.py`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/infrastructure/neo4j/queries.py). Domain modules never execute inline or ad-hoc Cypher strings.
+All Cypher interactions are centralized in [`kryptodb/infrastructure/neo4j/queries.py`](../kryptodb/infrastructure/neo4j/queries.py). Domain modules never execute inline or ad-hoc Cypher strings.
+
+#### Audit Trail & Hash-Chained Ledger
+Every mutation (memory write, correction, revocation, session activation, and admin action) is committed to an append-only, tamper-evident SQLite hash chain managed by [`AuditLedger`](../kryptodb/infrastructure/audit_ledger.py) stored at `data/audit.db`.
 
 ---
 
 ### 3.5. Agent Runtime & HITL State Machine
 
-The agent runtime ([`kryptodb/agent_runtime/langgraph/graph.py`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/kryptodb/agent_runtime/langgraph/graph.py)) is implemented as a compiled LangGraph state machine.
+The agent runtime ([`kryptodb/agent_runtime/langgraph/graph.py`](../kryptodb/agent_runtime/langgraph/graph.py)) is implemented as a compiled LangGraph state machine.
 
 ```mermaid
 stateDiagram-v2
@@ -280,9 +288,16 @@ To prevent output stack contamination (DEF-02):
 ### 3.6. Next.js WebGL Frontend (`ui/`)
 
 The frontend application provides real-time visualization and administrative governance:
-- **Graph Explorer ([`GraphExplorer.tsx`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/ui/src/app/GraphExplorer.tsx))**: Sigma.js WebGL canvas utilizing ForceAtlas2 physics layout, color-coded by tenant and scope, with animated particle pulses along active multi-hop retrieval paths.
-- **3D Earth Graph ([`earth-graph.tsx`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/ui/src/components/earth-graph.tsx))**: Global orbital graph view mapping multi-region cloud deployment nodes and cross-tenant bridges.
-- **Interactive Chat Popup ([`ChatPopup.tsx`](file:///mnt/DE94962594960067/Users/kandp/Documents/Work/Git_Files/AIAgent/ui/src/app/ChatPopup.tsx))**: Real-time streaming chat interface with interactive memory cards:
+- **Graph Explorer ([`GraphExplorer.tsx`](../ui/src/app/GraphExplorer.tsx))**: Sigma.js WebGL canvas utilizing ForceAtlas2 physics layout, color-coded by tenant and scope, with animated particle pulses along active multi-hop retrieval paths.
+- **3D Earth Graph ([`earth-graph.tsx`](../ui/src/components/earth-graph.tsx))**: Global orbital graph view mapping multi-region cloud deployment nodes and cross-tenant bridges.
+- **Interactive Chat Popup ([`ChatPopup.tsx`](../ui/src/app/ChatPopup.tsx))**: Real-time streaming chat interface with interactive memory cards:
   - Yellow cards for pending HITL writes with one-click Approve/Reject buttons.
   - Green badges showing committed `(Subject, Predicate, Object)` triples.
   - Interactive citation tags linking assistant answers directly to graph edges.
+
+
+## Known Limitations
+
+- **Logical Isolation (Plaintext Storage):** v0.2.0 stores plaintext facts and embeddings in Neo4j Community Edition (`5.21.2-community`), isolated logically via `RequestContext` and `FilterBuilder`. See `docs/audit/THREAT_MODEL.md`.
+- **Bi-Temporal Queries:** `recorded_from` / `recorded_to` timestamps are recorded on writes, while `as_of_valid` / `as_of_recorded` historical query parameters in `FilterBuilder` are scheduled for Phase 4.
+- **Legacy Stack Removal:** Unmounted v0.1.0 modules (`daemon/server.py`, `graph/`, `memory_api/`, `agent/`, `integrity/`, `legacy/`) remain pending deletion after full test verification.

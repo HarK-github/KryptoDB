@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -11,10 +11,10 @@ from kryptodb.core.episodic.events import record_event
 from kryptodb.core.episodic.summaries import summarize_session
 from kryptodb.core.memory.memory_service import memory_service
 from kryptodb.core.memory.models import MemoryRecord
-from kryptodb.core.ports import Event, EpisodeSummary
 from kryptodb.core.retrieval.ranking import AttributedMemoryResult
 from kryptodb.core.retrieval.service import retrieval_service
-from kryptodb.interfaces.http.middleware.context import get_request_context
+from kryptodb.infrastructure.audit_ledger import audit_ledger
+from kryptodb.interfaces.http.middleware.context import authorize_or_403, get_request_context
 
 v1_router = APIRouter(prefix="/v1", tags=["V1 GraphRAG Memory"])
 
@@ -55,11 +55,17 @@ async def propose_memory_route(
     req: ProposeMemoryRequest,
     context: RequestContext = Depends(get_request_context),
 ):
+    authorize_or_403(
+        context,
+        "memory:write",
+        target_scopes=[req.scope],
+        audit_ledger=audit_ledger,
+    )
     target_val = req.target or req.object
     if not target_val:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Either 'target' or 'object' must be provided.")
     try:
-        return memory_service.propose_memory(
+        rec = memory_service.propose_memory(
             subject=req.subject,
             predicate=req.predicate,
             obj=target_val,
@@ -71,6 +77,15 @@ async def propose_memory_route(
             quote_substring=req.quote_substring,
             session_id=req.session_id,
         )
+        audit_ledger.append(
+            actor=context.agent_id,
+            action="memory:write",
+            tenant_id=context.tenant_id,
+            scope=req.scope,
+            outcome="allowed",
+            target_id=rec.id,
+        )
+        return rec
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
@@ -80,7 +95,12 @@ async def search_memory_route(
     req: SearchMemoryRequest,
     context: RequestContext = Depends(get_request_context),
 ):
-    effective_scopes = req.scopes or (list(context.active_scopes) if not context.is_system else None)
+    effective_scopes = authorize_or_403(
+        context,
+        "memory:read",
+        target_scopes=req.scopes,
+        audit_ledger=audit_ledger,
+    )
     return retrieval_service.search(
         query=req.query,
         tenant_id=context.tenant_id,
@@ -97,6 +117,7 @@ async def list_memories_route(
     offset: int = 0,
     context: RequestContext = Depends(get_request_context),
 ):
+    authorize_or_403(context, "memory:read", audit_ledger=audit_ledger)
     return memory_service.list_memories(context=context, limit=limit, offset=offset)
 
 
@@ -105,6 +126,7 @@ async def get_memory_route(
     id: str,
     context: RequestContext = Depends(get_request_context),
 ):
+    authorize_or_403(context, "memory:read", audit_ledger=audit_ledger)
     mem = memory_service.get_memory(id=id, context=context)
     if not mem:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Memory '{id}' not found.")
@@ -117,6 +139,7 @@ async def correct_memory_route(
     req: CorrectMemoryRequest,
     context: RequestContext = Depends(get_request_context),
 ):
+    authorize_or_403(context, "memory:write", audit_ledger=audit_ledger)
     try:
         return memory_service.correct_memory(id=id, new_value=req.new_value, context=context)
     except ValueError as exc:
@@ -128,7 +151,16 @@ async def forget_memory_route(
     id: str,
     context: RequestContext = Depends(get_request_context),
 ):
+    authorize_or_403(context, "memory:revoke", audit_ledger=audit_ledger)
     memory_service.forget_memory(id=id, context=context)
+    audit_ledger.append(
+        actor=context.agent_id,
+        action="memory:revoke",
+        tenant_id=context.tenant_id,
+        scope=",".join(sorted(context.active_scopes)),
+        outcome="allowed",
+        target_id=id,
+    )
     return {"status": "forgotten", "id": id}
 
 
@@ -137,6 +169,7 @@ async def forget_user_route(
     user_id: str,
     context: RequestContext = Depends(get_request_context),
 ):
+    authorize_or_403(context, "memory:revoke", audit_ledger=audit_ledger)
     count = memory_service.forget_user(user_id=user_id, context=context)
     return {"status": "user_forgotten", "user_id": user_id, "revoked_count": count}
 
@@ -146,6 +179,7 @@ async def record_event_route(
     req: RecordEventRequest,
     context: RequestContext = Depends(get_request_context),
 ):
+    authorize_or_403(context, "memory:write", target_scopes=[req.scope], audit_ledger=audit_ledger)
     if not memory_service.event_store:
         raise HTTPException(status_code=500, detail="Event store not configured")
     ev = record_event(
@@ -164,6 +198,7 @@ async def summarize_session_route(
     session_id: str,
     context: RequestContext = Depends(get_request_context),
 ):
+    authorize_or_403(context, "memory:read", audit_ledger=audit_ledger)
     if not memory_service.event_store:
         raise HTTPException(status_code=500, detail="Event store not configured")
     summary = summarize_session(session_id=session_id, context=context, store=memory_service.event_store)

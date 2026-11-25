@@ -16,7 +16,16 @@ load_dotenv()
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from kryptodb.core.identity.authentication import require_auth
+from kryptodb.core.context import RequestContext
+from kryptodb.core.identity.authentication import authenticator
+from kryptodb.core.identity.policy import PolicyDeniedError, policy_engine
+from kryptodb.infrastructure.audit_ledger import audit_ledger
+from kryptodb.interfaces.http.middleware.context import (
+    authorize_or_403,
+    build_context_from_claims,
+    require_admin_context,
+    require_context,
+)
 
 logger = logging.getLogger("kryptodb.interfaces.http.routes.chat")
 
@@ -101,11 +110,21 @@ def get_agent_checkpointer():
     global _agent_checkpointer
     if _agent_checkpointer is None:
         try:
-            from langgraph.checkpoint.memory import MemorySaver
-            _agent_checkpointer = MemorySaver()
+            import sqlite3
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            db_path = os.environ.get("KRYPTODB_CHECKPOINT_DB", "data/checkpointer.sqlite")
+            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            _agent_checkpointer = SqliteSaver(conn)
+            _agent_checkpointer.setup()
         except Exception as exc:
-            logger.error("Could not initialize MemorySaver: %s", exc)
-            return None
+            logger.warning("SqliteSaver unavailable (%s); falling back to MemorySaver (non-durable).", exc)
+            try:
+                from langgraph.checkpoint.memory import MemorySaver
+                _agent_checkpointer = MemorySaver()
+            except Exception as inner_exc:
+                logger.error("Could not initialize MemorySaver: %s", inner_exc)
+                return None
     return _agent_checkpointer
 
 
@@ -130,8 +149,9 @@ class ModelConfigChange(BaseModel):
 # ── HTTP Endpoints ─────────────────────────────────────────────────────────
 
 @router.get("/models")
-def list_available_models():
+def list_available_models(context: RequestContext = Depends(require_context)):
     """Returns active model, Ollama URL, and detected/available LLM models."""
+    authorize_or_403(context, "chat:read", audit_ledger=audit_ledger)
     global ACTIVE_LLM_MODEL
     ollama_models = []
     try:
@@ -165,7 +185,7 @@ def list_available_models():
 
 
 @router.post("/config/model")
-def set_active_model(cfg: ModelConfigChange):
+def set_active_model(cfg: ModelConfigChange, context: RequestContext = Depends(require_admin_context)):
     """Dynamically switch the active LLM model."""
     global ACTIVE_LLM_MODEL
     ACTIVE_LLM_MODEL = cfg.model.strip()
@@ -174,17 +194,30 @@ def set_active_model(cfg: ModelConfigChange):
 
 
 @router.get("/chat/{thread_id}/history")
-def get_chat_history(thread_id: str, auth: Dict[str, Any] = Depends(require_auth)):
-    """Retrieve checkpointed conversation history for a given thread_id."""
+def get_chat_history(thread_id: str, context: RequestContext = Depends(require_context)):
+    """Retrieve checkpointed conversation history with strict thread-owner enforcement."""
+    authorize_or_403(context, "chat:read", audit_ledger=audit_ledger)
     from kryptodb.agent_runtime.langgraph.graph import get_compiled_graph
 
     config = {"configurable": {"thread_id": thread_id}}
     graph = get_compiled_graph(checkpointer=get_agent_checkpointer())
 
     state_snapshot = graph.get_state(config)
+    values = state_snapshot.values if state_snapshot and state_snapshot.values else {}
+    owner_agent_id = values.get("agent_id")
+    owner_tenant_id = values.get("tenant_id")
+    if owner_agent_id or owner_tenant_id:
+        authorize_or_403(
+            context,
+            "chat:read",
+            target_tenant=owner_tenant_id,
+            target_agent_id=owner_agent_id,
+            audit_ledger=audit_ledger,
+        )
+
     messages = []
-    if state_snapshot.values and "messages" in state_snapshot.values:
-        for m in state_snapshot.values["messages"]:
+    if values and "messages" in values:
+        for m in values["messages"]:
             role = "user" if type(m).__name__ == "HumanMessage" else "agent"
             content = m.content if hasattr(m, "content") else str(m)
             messages.append({"role": role, "content": content})
@@ -192,14 +225,21 @@ def get_chat_history(thread_id: str, auth: Dict[str, Any] = Depends(require_auth
     return {
         "thread_id": thread_id,
         "messages": messages,
-        "status": state_snapshot.values.get("status", "idle") if state_snapshot.values else "idle",
-        "pending_facts": state_snapshot.values.get("pending_facts", []) if state_snapshot.values else [],
+        "status": values.get("status", "idle"),
+        "pending_facts": values.get("pending_facts", []),
     }
 
 
 @router.post("/agent/chat")
-async def agent_chat(req: AgentChatRequest, auth: Dict[str, Any] = Depends(require_auth)):
+async def agent_chat(req: AgentChatRequest, context: RequestContext = Depends(require_context)):
     """Invoke or continue conversation with the KryptoDB Agent Graph."""
+    authorize_or_403(
+        context,
+        "chat:write",
+        target_agent_id=req.agent_id,
+        target_scopes=[req.user_scope],
+        audit_ledger=audit_ledger,
+    )
     from kryptodb.agent_runtime.langgraph.graph import get_compiled_graph
     from langchain_core.messages import HumanMessage, AIMessage
 
@@ -211,7 +251,8 @@ async def agent_chat(req: AgentChatRequest, auth: Dict[str, Any] = Depends(requi
 
     input_state = {
         "messages": [HumanMessage(content=req.message)],
-        "agent_id": req.agent_id,
+        "agent_id": req.agent_id if context.is_system else context.agent_id,
+        "tenant_id": context.tenant_id,
         "user_scope": req.user_scope,
     }
 
@@ -270,7 +311,7 @@ async def agent_chat(req: AgentChatRequest, auth: Dict[str, Any] = Depends(requi
 
 
 @router.post("/agent/approve")
-async def agent_approve(req: AgentApproveRequest, auth: Dict[str, Any] = Depends(require_auth)):
+async def agent_approve(req: AgentApproveRequest, context: RequestContext = Depends(require_admin_context)):
     """Resume agent execution following HITL write approval or rejection."""
     from kryptodb.agent_runtime.langgraph.graph import get_compiled_graph
 
@@ -319,9 +360,17 @@ async def agent_approve(req: AgentApproveRequest, auth: Dict[str, Any] = Depends
 
 @router.websocket("/chat/{thread_id}/stream")
 async def chat_stream_websocket(websocket: WebSocket, thread_id: str):
-    """Live event stream WebSocket emitting agent_token, recall_event, denial_event, pending_approval."""
+    """Authenticated live event stream WebSocket bound to token claims & PolicyEngine."""
+    auth_header = websocket.headers.get("authorization") or ""
+    token = auth_header.split(" ", 1)[1].strip() if auth_header.lower().startswith("bearer ") else websocket.query_params.get("token")
+    claims = authenticator.verify_token(token) if token else None
+    if not claims:
+        await websocket.close(code=4401)
+        return
+
+    ws_context = build_context_from_claims(claims)
     await websocket.accept()
-    logger.info("WebSocket client connected for thread: %s", thread_id)
+    logger.info("WebSocket client connected for thread: %s (agent=%s)", thread_id, ws_context.agent_id)
 
     from kryptodb.agent_runtime.langgraph.graph import get_compiled_graph
 
@@ -333,21 +382,42 @@ async def chat_stream_websocket(websocket: WebSocket, thread_id: str):
         while True:
             data = await websocket.receive_json()
             user_msg = data.get("message", "")
-            agent_id = data.get("agent_id", "Agent-1")
-            user_scope = data.get("user_scope", "research")
+            requested_agent = data.get("agent_id")
+            default_scope = sorted(ws_context.active_scopes)[0] if ws_context.active_scopes and "*" not in ws_context.active_scopes else "research"
+            requested_scope = data.get("user_scope") or default_scope
+
+            try:
+                effective_scopes = policy_engine.authorize(
+                    ws_context,
+                    "chat:write",
+                    target_agent_id=requested_agent if (requested_agent and not ws_context.is_system) else None,
+                    target_scopes=[requested_scope],
+                    audit_ledger=audit_ledger,
+                )
+            except PolicyDeniedError as exc:
+                await websocket.send_json({
+                    "type": "denied",
+                    "status": "denied",
+                    "detail": str(exc),
+                })
+                continue
+
+            bound_agent_id = requested_agent if (ws_context.is_system and requested_agent) else ws_context.agent_id
+            bound_scope = effective_scopes[0] if effective_scopes else requested_scope
 
             from langchain_core.messages import HumanMessage
             input_state = {
                 "messages": [HumanMessage(content=user_msg)],
-                "agent_id": agent_id,
-                "user_scope": user_scope,
+                "agent_id": bound_agent_id,
+                "tenant_id": ws_context.tenant_id,
+                "user_scope": bound_scope,
             }
 
             try:
                 async for mode, payload in graph.astream(input_state, config, stream_mode=["messages", "updates"]):
                     if mode == "messages":
-                        token, metadata = payload
-                        msg_class = type(token).__name__
+                        tok, metadata = payload
+                        msg_class = type(tok).__name__
                         if msg_class not in ("AIMessageChunk", "AIMessage"):
                             continue
                         message_node = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
@@ -355,7 +425,7 @@ async def chat_stream_websocket(websocket: WebSocket, thread_id: str):
                             continue
                         await websocket.send_json({
                             "type": "agent_token",
-                            "content": token.content if hasattr(token, "content") else str(token),
+                            "content": tok.content if hasattr(tok, "content") else str(tok),
                             "is_chunk": msg_class == "AIMessageChunk",
                         })
                     elif mode == "updates":
@@ -414,14 +484,14 @@ async def chat_stream_websocket(websocket: WebSocket, thread_id: str):
                                 if state_update.get("denied_recalls"):
                                     await websocket.send_json({
                                         "type": "denial_event",
-                                        "scope": state_update["denied_recalls"][0].get("scope", user_scope),
+                                        "scope": state_update["denied_recalls"][0].get("scope", bound_scope),
                                         "reason": state_update["denied_recalls"][0].get("status", "no_key"),
                                     })
                                 elif state_update.get("recalled_facts"):
                                     await websocket.send_json({
                                         "type": "recall_event",
                                         "count": len(state_update["recalled_facts"]),
-                                        "scope": state_update["recalled_facts"][0].get("scope", user_scope),
+                                        "scope": state_update["recalled_facts"][0].get("scope", bound_scope),
                                     })
                 await websocket.send_json({"type": "done"})
             except GraphInterrupt as gi:

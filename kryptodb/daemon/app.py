@@ -1,57 +1,157 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
+from typing import Any, Dict
+
 from dotenv import load_dotenv
+
 load_dotenv()
-from fastapi import FastAPI
+
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from kryptodb.interfaces.http.routes.memory import router as memory_router
-from kryptodb.interfaces.http.routes.admin import router as admin_router
-from kryptodb.interfaces.http.routes.health import router as health_router
-from kryptodb.interfaces.http.routes.graph import router as graph_router
-from kryptodb.interfaces.http.routes.chat import router as chat_router
-from kryptodb.interfaces.http.routes.v1_routes import v1_router
+from kryptodb.core.context import RequestContext, create_system_context
+from kryptodb.core.identity.authentication import authenticator
+from kryptodb.infrastructure.audit_ledger import audit_ledger
+from kryptodb.infrastructure.neo4j.client import neo4j_client
 from kryptodb.infrastructure.neo4j.schema import ensure_schema
-from kryptodb.storage.neo4j_client import neo4j_client
+from kryptodb.interfaces.http.middleware.context import authorize_or_403, require_context
+from kryptodb.interfaces.http.routes.admin import router as admin_router
+from kryptodb.interfaces.http.routes.chat import router as chat_router
+from kryptodb.interfaces.http.routes.graph import router as graph_router
+from kryptodb.interfaces.http.routes.health import router as health_router
+from kryptodb.interfaces.http.routes.memory import router as memory_router
+from kryptodb.interfaces.http.routes.v1_routes import v1_router
 
 logger = logging.getLogger("kryptodb.app")
 
+
+def _bootstrap_encrypted_mode(app: FastAPI) -> None:
+    """Initializes v3 EncryptedNeo4jMemoryStore + RAMVectorIndex + EncryptedRetrievalService."""
+    from kryptodb.core.embeddings.embedder import get_embedder
+    from kryptodb.core.memory.memory_service import memory_service
+    from kryptodb.core.retrieval.service import retrieval_service
+    from kryptodb.infrastructure.crypto.keyring import LocalKeyFileProvider
+    from kryptodb.infrastructure.crypto.ram_vector_index import RAMVectorIndex
+    from kryptodb.infrastructure.neo4j.encrypted_retrieval import EncryptedRetrievalService
+    from kryptodb.infrastructure.neo4j.encrypted_store import EncryptedNeo4jMemoryStore
+    from kryptodb.workers.plaintext_audit import PlaintextAuditScanner
+
+    key_provider = LocalKeyFileProvider()  # fails closed if KRYPTODB_KEY_FILE is missing/invalid
+    vector_index = RAMVectorIndex()
+    embedder = get_embedder()
+    embed_fn = embedder.embed
+
+    enc_store = EncryptedNeo4jMemoryStore(
+        client=neo4j_client,
+        key_provider=key_provider,
+        vector_index=vector_index,
+        embed_fn=embed_fn,
+        audit_ledger=audit_ledger,
+    )
+    enc_store.ensure_schema()
+
+    enc_retrieval = EncryptedRetrievalService(
+        store=enc_store,
+        vector_index=vector_index,
+        embed_fn=embed_fn,
+    )
+
+    # Rebuild RAM vector index for configured scopes on startup
+    scopes_raw = os.getenv("KRYPTODB_ENCRYPTED_SCOPES", "default,research,engineering")
+    sys_ctx = create_system_context()
+    for scope in [s.strip() for s in scopes_raw.split(",") if s.strip()]:
+        report = enc_retrieval.rebuild_index_for_scope(scope, sys_ctx)
+        logger.info("Encrypted RAMVectorIndex rebuilt: %s", report)
+
+    scanner = PlaintextAuditScanner(client=neo4j_client)
+    app.state.storage_mode = "encrypted"
+    app.state.encrypted_store = enc_store
+    app.state.encrypted_retrieval = enc_retrieval
+    app.state.plaintext_scanner = scanner
+
+    # Wire live services onto encrypted store & retrieval
+    memory_service.store = enc_store
+    retrieval_service.encrypted_retrieval = enc_retrieval
+    logger.info("KryptoDB encrypted storage mode active (kid=%s)", key_provider.bundle.current_kid)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: ensure storage connection and schema
-    try:
-        from kryptodb.storage import bootstrap_storage
-        bootstrap_storage()
-        if neo4j_client.driver:
-            report = ensure_schema(neo4j_client.driver)
-            logger.info("Schema & Index initialization report: %s", report)
-    except Exception as exc:
-        logger.warning("Storage bootstrap warning on boot: %s", exc)
+    # 1. Fail-closed admin API key check (zero dev-key fallbacks)
+    authenticator.validate_startup_config()
+
+    # 2. Optional JSON policy bootstrap (KRYPTODB_POLICY_FILE)
+    loaded = authenticator.load_policy_file()
+    if loaded:
+        logger.info("Loaded %d agent policy entries from JSON policy file", loaded)
+
+    # 3. Fail-fast Neo4j connectivity & schema bootstrap
+    if hasattr(neo4j_client, "connect") and not getattr(neo4j_client, "driver", None):
+        neo4j_client.connect()
+    if not getattr(neo4j_client, "driver", None):
+        raise RuntimeError("Neo4j driver failed to initialize; refusing to start.")
+    if hasattr(neo4j_client, "check_health") and not neo4j_client.check_health():
+        raise RuntimeError("Neo4j is unreachable on startup; refusing to start.")
+
+    report = ensure_schema(neo4j_client.driver)
+    logger.info("Schema & Index initialization report: %s", report)
+
+    # 4. Storage mode wiring (plaintext default or v3 encrypted)
+    storage_mode = os.getenv("KRYPTODB_STORAGE_MODE", "plaintext").strip().lower()
+    if storage_mode == "encrypted":
+        _bootstrap_encrypted_mode(app)
+    else:
+        app.state.storage_mode = "plaintext"
+
     yield
-    # Shutdown
     try:
         if neo4j_client.driver:
             neo4j_client.driver.close()
     except Exception:
         pass
 
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv("KRYPTODB_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+    return [origin.strip() for origin in raw.split(",") if origin.strip() and origin.strip() != "*"]
+
+
 def create_app() -> FastAPI:
+    storage_mode = os.getenv("KRYPTODB_STORAGE_MODE", "plaintext").strip().lower()
+    desc = (
+        "Encrypted GraphRAG & Multi-Agent Memory Infrastructure"
+        if storage_mode == "encrypted"
+        else "High-Performance GraphRAG & Multi-Agent Memory Infrastructure"
+    )
     app = FastAPI(
         title="KryptoDB",
-        description="High-Performance Plaintext GraphRAG & Memory Infrastructure",
+        description=desc,
         version="0.2.0",
-        lifespan=lifespan
+        lifespan=lifespan,
     )
 
+    allowed_origins = _cors_origins()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=allowed_origins,
+        allow_credentials=bool(allowed_origins),
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Tenant-ID", "X-Session-ID", "X-User-ID", "X-Trace-ID"],
     )
+
+    from kryptodb.infrastructure.crypto.envelope import DecryptionKeyError
+
+    @app.exception_handler(DecryptionKeyError)
+    async def decryption_key_error_handler(request: Request, exc: DecryptionKeyError):
+        logger.error("DecryptionKeyError on %s: %s", request.url.path, exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": "Encrypted memory key unavailable or decryption failure threshold exceeded."},
+        )
 
     app.include_router(health_router)
     app.include_router(v1_router)
@@ -61,15 +161,29 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
 
     # Root route aliases for frontend compatibility
-    from kryptodb.interfaces.http.routes.admin import list_agents, get_audit
+    from kryptodb.interfaces.http.routes.admin import get_audit, list_agents
     from kryptodb.interfaces.http.routes.memory import get_ontology
     from kryptodb.core.retrieval import retrieval_service
+
     app.add_api_route("/agents", list_agents, methods=["GET"], tags=["Agents"])
     app.add_api_route("/audit", get_audit, methods=["GET"], tags=["Audit"])
     app.add_api_route("/ontology", get_ontology, methods=["GET"], tags=["Ontology"])
 
     @app.post("/memory/{agent_id}/query", tags=["Legacy Compatibility"])
-    async def legacy_memory_query(agent_id: str, req: dict):
+    async def legacy_memory_query(
+        agent_id: str,
+        req: dict,
+        context: RequestContext = Depends(require_context),
+    ):
+        req_scope = req.get("requested_scope") or req.get("scope")
+        scopes = authorize_or_403(
+            context,
+            "memory:read",
+            target_agent_id=agent_id,
+            target_scopes=[req_scope] if req_scope else None,
+            audit_ledger=audit_ledger,
+        )
+
         raw_query = req.get("query")
         if isinstance(raw_query, dict):
             query = raw_query.get("query") or raw_query.get("term") or ""
@@ -77,9 +191,13 @@ def create_app() -> FastAPI:
             query = str(raw_query).strip()
         else:
             query = ""
-        scope = req.get("requested_scope") or req.get("scope")
-        scopes = [scope] if scope else None
-        results = retrieval_service.search(query=query, tenant_id="default", active_scopes=scopes)
+
+        results = retrieval_service.search(
+            query=query,
+            tenant_id=context.tenant_id,
+            active_scopes=scopes,
+            now=context.now,
+        )
         facts = []
         for r in results:
             src = r.provenance_path[0].source if r.provenance_path else "Entity"
@@ -98,25 +216,43 @@ def create_app() -> FastAPI:
                 "citation": r.citation_tag,
                 "permission_scope": sc,
             })
-        status = "ok" if facts else "not_found"
-        return {"status": status, "facts": facts, "mode": req.get("mode", "local")}
+        status_str = "ok" if facts else "not_found"
+        return {"status": status_str, "facts": facts, "mode": req.get("mode", "local")}
 
     @app.post("/memory", tags=["Legacy Compatibility"])
     @app.post("/memory/remember", tags=["Legacy Compatibility"])
-    async def legacy_memory_write(req: dict):
-        agent_id = req.get("agent_id", "Agent-1")
+    async def legacy_memory_write(
+        req: dict,
+        context: RequestContext = Depends(require_context),
+    ):
+        requested_agent = req.get("agent_id") or context.agent_id
         fact_payload = req.get("fact") or req.get("edge") or req
         if not isinstance(fact_payload, dict):
             fact_payload = {}
-        subject = fact_payload.get("subject_id") or fact_payload.get("subject") or req.get("subject") or "User"
-        predicate = fact_payload.get("predicate") or req.get("predicate") or "HAS_FACT"
-        obj = fact_payload.get("object_id") or fact_payload.get("obj") or fact_payload.get("object") or fact_payload.get("target") or req.get("object") or req.get("obj") or "Value"
+        subject = fact_payload.get("subject_id") or fact_payload.get("subject") or req.get("subject") or ""
+        predicate = fact_payload.get("predicate") or req.get("predicate") or ""
+        obj = fact_payload.get("object_id") or fact_payload.get("obj") or fact_payload.get("object") or fact_payload.get("target") or req.get("object") or req.get("obj") or ""
         scope = fact_payload.get("permission_scope") or fact_payload.get("scope") or req.get("scope") or "default"
         desc = fact_payload.get("description") or req.get("description") or f"{subject} {predicate} {obj}"
 
-        from kryptodb.core.context import RequestContext
+        authorize_or_403(
+            context,
+            "memory:write",
+            target_agent_id=requested_agent,
+            target_scopes=[scope],
+            audit_ledger=audit_ledger,
+        )
+
         from kryptodb.core.memory.memory_service import memory_service
-        ctx = RequestContext.create(tenant_id="default", agent_id=agent_id, active_scopes=[scope, "default", "research"])
+
+        ctx = RequestContext.create(
+            tenant_id=context.tenant_id,
+            agent_id=context.agent_id,
+            active_scopes=[scope],
+            is_system=context.is_system,
+            role=context.role,
+            permissions=context.permissions,
+        )
         try:
             record = memory_service.propose_memory(
                 subject=str(subject).strip(),
@@ -126,10 +262,18 @@ def create_app() -> FastAPI:
                 description=str(desc),
                 scope=scope,
             )
+            audit_ledger.append(
+                actor=ctx.agent_id,
+                action="propose_memory",
+                tenant_id=ctx.tenant_id,
+                scope=scope,
+                outcome="allowed",
+                target_id=record.id,
+            )
             return {"status": "ok", "fact": record.model_dump(mode="json")}
         except Exception as exc:
             logger.warning("legacy_memory_write error: %s", exc)
-            return {"status": "error", "detail": str(exc)}
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     # Optional: serve built Next.js frontend if ui-server directory exists
     from pathlib import Path
@@ -158,5 +302,6 @@ def create_app() -> FastAPI:
             return {"status": "ui-server running"}
 
     return app
+
 
 app = create_app()

@@ -1,6 +1,4 @@
 import os
-os.environ["KRYPTODB_ADMIN_API_KEY"] = "admin"
-
 import pytest
 from fastapi.testclient import TestClient
 from kryptodb.daemon.server import app
@@ -19,14 +17,14 @@ def test_history_endpoint_returns_checkpointed_messages():
             "user_scope": "PROJECT:synapse",
             "message": "Hello graph"
         },
-        headers={"Authorization": "Bearer admin"}
+        headers={"Authorization": "Bearer test-admin-key"}
     )
     assert res.status_code == 200
 
     # 2. Query history
     res_hist = client.get(
         f"/chat/{thread_id}/history",
-        headers={"Authorization": "Bearer admin"}
+        headers={"Authorization": "Bearer test-admin-key"}
     )
     assert res_hist.status_code == 200
     data = res_hist.json()
@@ -46,7 +44,7 @@ def test_message_endpoint_invokes_graph_with_correct_thread_id():
             "user_scope": "PROJECT:synapse",
             "message": "Query penicillin allergies"
         },
-        headers={"Authorization": "Bearer admin"}
+        headers={"Authorization": "Bearer test-admin-key"}
     )
     assert res.status_code == 200
     data = res.json()
@@ -59,7 +57,7 @@ def test_approve_endpoint_resumes_graph():
     res_appr = client.post(
         "/agent/approve",
         json={"thread_id": thread_id, "approved": True},
-        headers={"Authorization": "Bearer admin"}
+        headers={"Authorization": "Bearer test-admin-key"}
     )
     assert res_appr.status_code == 200
     data = res_appr.json()
@@ -71,7 +69,7 @@ def test_reject_endpoint_resumes_graph():
     res_rej = client.post(
         "/agent/approve",
         json={"thread_id": thread_id, "approved": False},
-        headers={"Authorization": "Bearer admin"}
+        headers={"Authorization": "Bearer test-admin-key"}
     )
     assert res_rej.status_code == 200
     data = res_rej.json()

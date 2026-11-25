@@ -15,18 +15,17 @@ if [ -n "$KRYPTODB_ADMIN_API_KEY_FILE" ] && [ -f "$KRYPTODB_ADMIN_API_KEY_FILE" 
     export KRYPTODB_ADMIN_API_KEY
 fi
 
-# ── Production guard ──────────────────────────────────────────────────────────
-if [ "${KRYPTODB_ENV:-development}" = "production" ]; then
-    if [ -z "$KRYPTODB_MASTER_KEY" ]; then
-        echo "FATAL: KRYPTODB_MASTER_KEY is required in production mode." >&2
-        exit 1
-    fi
-    if [ -z "$KRYPTODB_ADMIN_API_KEY" ]; then
-        echo "FATAL: KRYPTODB_ADMIN_API_KEY (or KRYPTODB_ADMIN_API_KEY_FILE) is required in production mode." >&2
-        exit 1
-    fi
+# ── Fail-closed admin key guard (always required before binding 0.0.0.0) ──────
+if [ "$MODE" = "web" ] && [ -z "$KRYPTODB_ADMIN_API_KEY" ]; then
+    echo "FATAL: KRYPTODB_ADMIN_API_KEY (or KRYPTODB_ADMIN_API_KEY_FILE) is required before binding 0.0.0.0." >&2
+    exit 1
 fi
 
+# ── Encrypted storage guard ───────────────────────────────────────────────────
+if [ "${KRYPTODB_STORAGE_MODE:-plaintext}" = "encrypted" ] && [ -z "$KRYPTODB_KEY_FILE" ]; then
+    echo "FATAL: KRYPTODB_KEY_FILE is required when KRYPTODB_STORAGE_MODE=encrypted." >&2
+    exit 1
+fi
 
 case "$MODE" in
     web)
@@ -38,6 +37,10 @@ case "$MODE" in
             --no-access-log
         ;;
     mcp)
+        if [ -z "$KRYPTODB_API_KEY" ]; then
+            echo "FATAL: KRYPTODB_API_KEY is required for MCP mode." >&2
+            exit 1
+        fi
         echo "Starting KryptoDB MCP server (stdio)..." >&2
         exec python -m kryptodb.interfaces.mcp.server
         ;;

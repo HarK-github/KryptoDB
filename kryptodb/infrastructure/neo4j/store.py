@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,9 +30,12 @@ from kryptodb.infrastructure.neo4j.queries import (
     ATOMIC_SUPERSEDE_QUERY,
     ADD_ENTITY_QUERY,
     FIND_ACTIVE_BY_SUBJECT_PREDICATE_QUERY,
+    FIND_BY_IDEMPOTENCY_KEY_QUERY,
     FIND_ENTITY_QUERY,
     GET_FACT_QUERY,
     LIST_EVENTS_BY_SESSION_QUERY,
+    PURGE_USER_EPISODES_QUERY,
+    PURGE_USER_EVENTS_QUERY,
     REVOKE_BY_USER_QUERY,
     REVOKE_FACT_QUERY,
     SEARCH_ENTITIES_PREFIX_QUERY,
@@ -48,6 +52,18 @@ from kryptodb.infrastructure.neo4j.queries import (
 logger = logging.getLogger("kryptodb.infrastructure.neo4j.store")
 
 
+class StorageExecutionError(RuntimeError):
+    """Raised when a Neo4j write or mutation fails or driver is disconnected."""
+
+
+class SupersessionConflictError(RuntimeError):
+    """Raised when an atomic supersession target is missing or already superseded."""
+
+
+def _norm_entity_name(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", str(value or "")).strip().split()).casefold()
+
+
 class Neo4jMemoryStore(MemoryStore, EventStore):
     """Neo4j persistent store satisfying MemoryStore and EventStore."""
 
@@ -55,8 +71,10 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
         self.client = client or neo4j_client
         self.embedder = embedder or embedding_service
 
-    def _execute(self, query: str, **params) -> List[Dict[str, Any]]:
+    def _execute(self, query: str, *, raise_on_error: bool = False, **params) -> List[Dict[str, Any]]:
         if not self.client or not getattr(self.client, "driver", None):
+            if raise_on_error:
+                raise StorageExecutionError("Neo4j driver is not connected.")
             return []
         try:
             if hasattr(self.client, "execute_query_with_retry"):
@@ -66,6 +84,8 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
             return [dict(r) for r in records]
         except Exception as exc:
             logger.error("Neo4j query execution error: %s", exc)
+            if raise_on_error:
+                raise StorageExecutionError(f"Neo4j execution failed: {exc}") from exc
             return []
 
     def write_fact(self, fact: MemoryRecord, context: RequestContext) -> MemoryRecord:
@@ -79,14 +99,17 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
 
         params = {
             "s_name": fact.subject.strip(),
+            "s_norm_name": _norm_entity_name(fact.subject),
             "s_id": f"ent-{uuid.uuid4().hex[:12]}",
             "s_emb": s_emb,
             "s_pending": s_pending,
             "o_name": fact.object.strip(),
+            "o_norm_name": _norm_entity_name(fact.object),
             "o_id": f"ent-{uuid.uuid4().hex[:12]}",
             "o_emb": o_emb,
             "o_pending": o_pending,
             "fact_id": fact.id,
+            "idempotency_key": fact.metadata.get("idempotency_key"),
             "predicate": fact.predicate.strip().upper(),
             "description": desc,
             "rel_emb": r_emb,
@@ -104,7 +127,19 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
             "now": now,
         }
 
-        self._execute(WRITE_FACT_QUERY, **params)
+        idem_key = params.get("idempotency_key")
+        if idem_key:
+            existing_rows = self._execute(
+                FIND_BY_IDEMPOTENCY_KEY_QUERY,
+                raise_on_error=True,
+                idempotency_key=idem_key,
+                tenant_id=fact.tenant_id,
+            )
+            if existing_rows:
+                row = existing_rows[0]
+                r_props = dict(row.get("r", {})) if hasattr(row.get("r", {}), "items") else {}
+                return self._record_to_memory(r_props, row.get("subject", fact.subject), row.get("object", fact.object))
+        self._execute(WRITE_FACT_QUERY, raise_on_error=True, **params)
         return fact
 
     def get_fact(self, id: str, context: RequestContext) -> Optional[MemoryRecord]:
@@ -124,7 +159,7 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
     ) -> List[MemoryRecord]:
         filter_clause, params = FilterBuilder.build(context, alias="r")
         query = FIND_ACTIVE_BY_SUBJECT_PREDICATE_QUERY.replace("{filter_clause}", filter_clause)
-        records = self._execute(query, subject=subject, predicate=predicate.upper(), **params)
+        records = self._execute(query, subject=subject, norm_subject=_norm_entity_name(subject), predicate=predicate.upper(), **params)
 
         results = []
         for row in records:
@@ -148,14 +183,17 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
         params = {
             "old_id": old_id,
             "s_name": new_fact.subject.strip(),
+            "s_norm_name": _norm_entity_name(new_fact.subject),
             "s_id": f"ent-{uuid.uuid4().hex[:12]}",
             "s_emb": s_emb,
             "s_pending": s_pending,
             "o_name": new_fact.object.strip(),
+            "o_norm_name": _norm_entity_name(new_fact.object),
             "o_id": f"ent-{uuid.uuid4().hex[:12]}",
             "o_emb": o_emb,
             "o_pending": o_pending,
             "fact_id": new_fact.id,
+            "idempotency_key": new_fact.metadata.get("idempotency_key"),
             "predicate": new_fact.predicate.strip().upper(),
             "description": desc,
             "rel_emb": r_emb,
@@ -173,12 +211,25 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
             "now": now,
         }
 
-        self._execute(ATOMIC_SUPERSEDE_QUERY, **params)
+        rows = self._execute(ATOMIC_SUPERSEDE_QUERY, raise_on_error=True, **params)
+        if not rows:
+            raise SupersessionConflictError(
+                f"Supersession target '{old_id}' is missing, outside scope '{new_fact.scope}', or no longer active."
+            )
         return new_fact
 
-    def revoke(self, id: str, context: RequestContext) -> None:
+    def revoke(self, id: str, context: RequestContext) -> bool:
         now = context.now.isoformat()
-        self._execute(REVOKE_FACT_QUERY, fact_id=id, tenant_id=context.tenant_id, now=now)
+        rows = self._execute(
+            REVOKE_FACT_QUERY,
+            raise_on_error=True,
+            fact_id=id,
+            tenant_id=context.tenant_id,
+            is_system=bool(context.is_system or ("*" in context.active_scopes)),
+            active_scopes=list(context.active_scopes),
+            now=now,
+        )
+        return bool(rows)
 
     def search_vector(
         self, query_embedding: List[float], top_k: int, context: RequestContext
@@ -299,9 +350,22 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
     def revoke_by_user(self, user_id: str, context: RequestContext) -> int:
         records = self._execute(
             REVOKE_BY_USER_QUERY,
+            raise_on_error=True,
             tenant_id=context.tenant_id,
             user_id=user_id,
             now=context.now.isoformat(),
+        )
+        self._execute(
+            PURGE_USER_EVENTS_QUERY,
+            raise_on_error=True,
+            tenant_id=context.tenant_id,
+            user_id=user_id,
+        )
+        self._execute(
+            PURGE_USER_EPISODES_QUERY,
+            raise_on_error=True,
+            tenant_id=context.tenant_id,
+            user_id=user_id,
         )
         if records:
             return int(records[0].get("revoked_count", 0))
