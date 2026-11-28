@@ -759,7 +759,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                         return (
                             <div key={msg.id} className="chat-turn agent">
                                 {msg.steps && msg.steps.length > 0 && (
-                                    <div style={{ marginBottom: '8px', fontSize: '0.85em', color: '#8b949e', background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                    <div style={{ marginBottom: '8px', fontSize: '0.85em', color: 'var(--muted-foreground)', background: 'var(--surface)', padding: '8px 12px', borderRadius: '2px', border: '1px solid var(--border)' }}>
                                         <div 
                                             style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none' }}
                                             onClick={() => setMessages(prev => prev.map(m => m.id === msg.id && m.role === 'agent' ? { ...m, isThinkingCollapsed: !m.isThinkingCollapsed } : m))}

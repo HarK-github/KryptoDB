@@ -165,7 +165,7 @@ function Inspector({ node, onClose, onRevokeFact }: { node: any | null; onClose:
                                 {node.cardinality || 'MANY'}
                             </span>
                         </div>
-                        <div><span>status</span><code style={{ color: node.status === 'active' ? '#2dd4bf' : '#f59e0b' }}>{node.status || 'active'}</code></div>
+                        <div><span>status</span><code style={{ color: node.status === 'active' ? 'var(--accent)' : '#f59e0b' }}>{node.status || 'active'}</code></div>
                         <div><span>confidence</span><code>{Math.round((node.confidence ?? 1) * 100)}%</code></div>
                     </>
                 ) : (
@@ -278,7 +278,7 @@ function ProposeFactModal({
             <div className="propose-modal" onClick={e => e.stopPropagation()}>
                 <div className="propose-modal-head">
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <Sparkles size={17} style={{ color: '#2dd4bf' }} />
+                        <Sparkles size={17} style={{ color: 'var(--accent)' }} />
                         <strong>Propose Memory Fact</strong>
                     </div>
                     <Button onClick={onClose}><X size={15} /></Button>
@@ -526,7 +526,7 @@ function GraphExplorer({ selected, onSelect }: any) {
             </div>
 
             {notice && (
-                <div style={{ position: 'absolute', top: 90, left: 20, zIndex: 30, background: '#059669', color: '#fff', padding: '6px 14px', borderRadius: 4, fontSize: 12 }}>
+                <div style={{ position: 'absolute', top: 90, left: 20, zIndex: 30, background: '#1E7A56', color: '#fff', padding: '6px 14px', borderRadius: 4, fontSize: 12 }}>
                     {notice}
                 </div>
             )}
@@ -549,7 +549,7 @@ function GraphExplorer({ selected, onSelect }: any) {
                 <div className="attribution-results-drawer">
                     <div className="attribution-drawer-head">
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <Layers size={14} style={{ color: '#2dd4bf' }} />
+                            <Layers size={14} style={{ color: 'var(--accent)' }} />
                             <span>Retrieved <strong>{searchResults.length}</strong> Attributed Results via Hybrid RRF + 2-Hop Traversal</span>
                         </div>
                         <Button onClick={() => setSearchResults([])}><X size={13} /></Button>
@@ -724,7 +724,7 @@ function AgentsView() {
                     />
                     <Button onClick={saveKey} className="primary">Connect Admin</Button>
                 </div>
-                {notice && <p className="mono-muted" style={{ marginTop: 10, color: '#2dd4bf' }}>{notice}</p>}
+                {notice && <p className="mono-muted" style={{ marginTop: 10, color: 'var(--accent)' }}>{notice}</p>}
             </div>
 
             {/* Manage Permissions & Credentials */}
@@ -734,7 +734,7 @@ function AgentsView() {
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                         <label style={{ width: 120 }}>Selected Agent:</label>
                         <select 
-                            style={{ flex: 1, padding: '8px 12px', background: '#141722', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '6px', color: '#fff' }}
+                            style={{ flex: 1, padding: '8px 12px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '2px', color: 'var(--ink)' }}
                             value={agentId}
                             onChange={e => selectAgent(e.target.value)}
                         >
@@ -766,7 +766,7 @@ function AgentsView() {
                             <strong style={{ fontSize: '0.9em' }}>Active Keys:</strong>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
                                 {keys.map(k => (
-                                    <div key={k.key_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9em', padding: 8, background: 'rgba(0,0,0,0.25)', borderRadius: 4 }}>
+                                    <div key={k.key_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9em', padding: 8, background: 'var(--surface)', borderRadius: 4 }}>
                                         <div>
                                             <code>{k.key_id}</code>
                                             <span style={{ marginLeft: 10, color: '#94a3b8' }}>Agent: <strong>{k.agent_id}</strong></span>
@@ -1026,7 +1026,7 @@ function McpView() {
                     <div>
                         <select 
                             className="agent-select" 
-                            style={{ width: '100%', padding: '8px 12px', background: '#141722', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '6px', color: '#fff' }} 
+                            style={{ width: '100%', padding: '8px 12px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '2px', color: 'var(--ink)' }} 
                             value={agent} 
                             onChange={(e) => setAgent(e.target.value)} 
                             aria-label="Choose agent identity"
@@ -1213,7 +1213,7 @@ export default function Page() {
                 </nav>
                 <div className="sidebar-bottom">
                     <div className="security-note">
-                        <Shield size={15} style={{ color: '#2dd4bf' }} />
+                        <Shield size={15} style={{ color: 'var(--accent)' }} />
                         <div><strong>Plaintext GraphRAG</strong><span>Neo4j 2-Hop Active</span></div>
                     </div>
                 </div>

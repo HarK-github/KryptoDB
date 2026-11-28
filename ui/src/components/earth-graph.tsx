@@ -66,9 +66,9 @@ export default function EarthGraph() {
       >
         <defs>
           <radialGradient id="sphereGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#0d3534" stopOpacity="0.8" />
-            <stop offset="70%" stopColor="#0a4b48" stopOpacity="0.4" />
-            <stop offset="100%" stopColor="#041212" stopOpacity="0" />
+            <stop offset="0%" stopColor="#1B4D5C" stopOpacity="0.12" />
+            <stop offset="70%" stopColor="#1B4D5C" stopOpacity="0.04" />
+            <stop offset="100%" stopColor="#F6F5F1" stopOpacity="0" />
           </radialGradient>
           <radialGradient id="centerCore" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#1B4D5C" stopOpacity="0.10" />
