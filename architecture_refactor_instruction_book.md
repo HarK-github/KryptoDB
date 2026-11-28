@@ -481,3 +481,29 @@ New untracked files: `kryptodb/infrastructure/embeddings/__init__.py`, `kryptodb
 
 #### 4. Explicit Blockers / Unexecuted Checks
 - **BLOCKED:** Live Neo4j checks (`tests/eval/test_memory_engine_e2e.py` [5 tests], 50-thread concurrent `Cardinality.ONE` first-write test, and `scripts/eval_ablations.py` live plaintext/encrypted runs) require Docker / Neo4j on `localhost:7687`, which is unavailable in this environment (`dial unix /var/run/docker.sock: connect: no such file or directory`).
+
+---
+
+### PR Review Follow-Up Verification (Live Neo4j + Packaging + Summarizer Wiring)
+
+1. **`embeddings.py` vs `embeddings/` Collision Resolved:**
+   - Moved `kryptodb/infrastructure/embeddings.py` → `kryptodb/infrastructure/embeddings/service.py`.
+   - Re-exported `EmbeddingService` and `embedding_service` cleanly in `kryptodb/infrastructure/embeddings/__init__.py` (zero `importlib.util` workaround).
+2. **`EntitySummarizer` Wired:**
+   - Added `entity_summarizer: Optional[EntitySummarizer] = None` to `MemoryService.__init__`, `MemoryService.configure(...)`, and `_maybe_update_hub_summary(...)` on `commit` and `supersede` in `kryptodb/core/memory/memory_service.py`.
+   - Wired `EntitySummarizer(storage_mode="plaintext")` and `EntitySummarizer(cipher=EnvelopeCipher(key_provider), storage_mode="encrypted")` in `kryptodb/daemon/app.py`.
+3. **8 Skipped Tests Verified:**
+   - `grep -rn "pytest.skip\|skipif" tests/` confirms all 8 skips are solely `tests/eval/test_tiered_benchmark.py:63` (`"Live Neo4j stack is not available. Run docker compose up to execute live eval."`). Zero security, concurrency, or crypto tests are skipped.
+4. **Live Neo4j Execution (`aiagent-neo4j-1` started):**
+   - **50-Thread `Cardinality.ONE` First-Write Gate:** `ACTIVE_COUNT: 1` (`50-THREAD ATOMIC CARDINALITY.ONE GATE PASSED!` — Neo4j deadlock retries serialized all 50 threads to 1 active `:FACT` edge).
+   - **`tests/eval/test_memory_engine_e2e.py`:** 4/5 passed (`test_eval_stateful_supersession_and_temporal_shift`, `test_eval_context_pollution_resistance`, `test_eval_provenance_and_directional_precision`, `test_eval_scope_isolation_gating`); `test_eval_cardinality_invariants` failed only on pre-existing assertion `WORKS_FOR == Cardinality.MANY` vs `predicates.py` (`WORKS_FOR == Cardinality.ONE` per ADR 0002).
+   - **`scripts/eval_ablations.py --storage-mode plaintext` (`[LIVE]` Neo4j; deterministic/lexical fallback since `sentence_transformers` is not installed in `.venv`):**
+     - `flat_vector_only`: Recall@10 `0.80`, Precision@10 `0.16`, MRR `0.42`, nDCG@10 `0.4828`, p50 `20.57ms`
+     - `hybrid_rrf_0hop`: Recall@10 `0.80`, Precision@10 `0.16`, MRR `0.44`, nDCG@10 `0.4957`, p50 `24.00ms`
+     - `full_pipeline_2hop`: Recall@10 `0.60`, Precision@10 `0.4467`, MRR `0.70`, nDCG@10 `0.5701`, p50 `30.93ms`
+   - **`scripts/eval_ablations.py --storage-mode encrypted` (`[LIVE]` Neo4j; deterministic/lexical fallback):**
+     - `flat_vector_only`: Recall@10 `1.00`, Precision@10 `0.30`, MRR `0.5667`, nDCG@10 `0.6471`, p50 `44.99ms`
+     - `hybrid_rrf_0hop`: Recall@10 `1.00`, Precision@10 `0.30`, MRR `0.7167`, nDCG@10 `0.7232`, p50 `15.44ms`
+     - `full_pipeline_2hop`: Recall@10 `1.00`, Precision@10 `0.30`, MRR `0.7167`, nDCG@10 `0.7232`, p50 `14.84ms`
+   - **`uv run lint-imports`:** 2 kept, 0 broken (109 files, 367 dependencies).
+   - **`uv run pytest -rs -q --tb=short --ignore=tests/eval/test_memory_engine_e2e.py --ignore=tests/eval/test_tiered_benchmark.py`:** 167 passed, 0 failed, 0 skipped in 3.82s.

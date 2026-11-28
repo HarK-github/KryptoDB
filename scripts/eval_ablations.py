@@ -96,21 +96,26 @@ def _run_mode(
     if mode_name == "flat_vector_only":
         if storage_mode == "encrypted":
             enc_ret = app.state.encrypted_retrieval
-            hits = enc_ret._path_a_semantic(query, scope, ctx.now.isoformat(), top_k=10, max_fanout=10)
-            return [
-                AttributedMemoryResult(
-                    fact_id=fid,
-                    summary=fid,
-                    hops=0,
-                    final_score=round(score, 4),
-                    relevance_score=round(score, 4),
-                    confidence=1.0,
-                    recency_score=1.0,
-                    citation_tag=f"[{ctx.tenant_id}:{scope}]",
-                    provenance_path=[],
+            q_vec = enc_ret.embed_fn(query)
+            vec_hits = enc_ret.vector_index.search(scope, q_vec, top_k=10)
+            results: List[AttributedMemoryResult] = []
+            for fid, score in vec_hits[:10]:
+                rec = enc_ret.store.get_fact(fid, ctx)
+                summary = rec.description or f"{rec.subject} {rec.predicate} {rec.object}" if rec else fid
+                results.append(
+                    AttributedMemoryResult(
+                        fact_id=str(fid),
+                        summary=summary,
+                        hops=0,
+                        final_score=round(float(score), 4),
+                        relevance_score=round(float(score), 4),
+                        confidence=rec.confidence if rec else 1.0,
+                        recency_score=1.0,
+                        citation_tag=f"[{ctx.tenant_id}:{scope}]",
+                        provenance_path=[],
+                    )
                 )
-                for fid, score in hits[:10]
-            ]
+            return results
         # Plaintext flat vector-only: vector seed search, BM25=off, 0-hop traversal, rerank=off
         seeds = hybrid_search_engine.find_semantic_fallback_seeds(
             query=query, tenant_id=ctx.tenant_id, active_scopes=[scope], top_k=10

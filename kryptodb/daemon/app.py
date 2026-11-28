@@ -80,6 +80,7 @@ def wire_runtime_services(app: FastAPI, storage_mode: str) -> None:
 
 def _wire_plaintext_stack(app: FastAPI, memory_service: Any, retrieval_service: Any) -> None:
     """Wire Neo4jMemoryStore + PlaintextNeo4jRetriever into the service singletons."""
+    from kryptodb.core.memory.entity_summarizer import EntitySummarizer
     from kryptodb.core.retrieval.hybrid_search import hybrid_search_engine
     from kryptodb.core.retrieval.ranking import path_reranker
     from kryptodb.core.retrieval.traversal import multihop_traverser
@@ -95,18 +96,22 @@ def _wire_plaintext_stack(app: FastAPI, memory_service: Any, retrieval_service: 
         client=neo4j_client,
         retrospective_query=RETROSPECTIVE_FACTS_QUERY,
     )
+    summarizer = EntitySummarizer(storage_mode="plaintext")
 
-    memory_service.configure(store=store, client=neo4j_client)
+    memory_service.configure(store=store, client=neo4j_client, entity_summarizer=summarizer)
     retrieval_service.client = neo4j_client
     retrieval_service.retriever = retriever
 
     app.state.storage_mode = "plaintext"
+    app.state.entity_summarizer = summarizer
     logger.info("KryptoDB plaintext storage mode active.")
 
 
 def _wire_encrypted_stack(app: FastAPI, memory_service: Any, retrieval_service: Any, embedder: Any = None) -> None:
     """Wire EncryptedNeo4jMemoryStore + EncryptedRetrievalService into the service singletons."""
     from kryptodb.core.embeddings.embedder import get_embedder
+    from kryptodb.core.memory.entity_summarizer import EntitySummarizer
+    from kryptodb.infrastructure.crypto.envelope import EnvelopeCipher
     from kryptodb.infrastructure.crypto.keyring import LocalKeyFileProvider
     from kryptodb.infrastructure.crypto.ram_vector_index import RAMVectorIndex
     from kryptodb.infrastructure.neo4j.encrypted_retrieval import EncryptedRetrievalService
@@ -147,9 +152,11 @@ def _wire_encrypted_stack(app: FastAPI, memory_service: Any, retrieval_service: 
     app.state.plaintext_scanner = scanner
 
     # Wire services: use enc_retrieval's Retriever-protocol search() method
-    memory_service.configure(store=enc_store, client=neo4j_client)
+    summarizer = EntitySummarizer(cipher=EnvelopeCipher(key_provider), storage_mode="encrypted")
+    memory_service.configure(store=enc_store, client=neo4j_client, entity_summarizer=summarizer)
     retrieval_service.client = neo4j_client
     retrieval_service.retriever = enc_retrieval  # enc_retrieval.search() conforms to Retriever
+    app.state.entity_summarizer = summarizer
 
     logger.info("KryptoDB encrypted storage mode active (kid=%s)", key_provider.bundle.current_kid)
 
