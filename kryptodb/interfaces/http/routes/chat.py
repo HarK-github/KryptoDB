@@ -414,7 +414,10 @@ async def chat_stream_websocket(websocket: WebSocket, thread_id: str):
             }
 
             try:
-                async for mode, payload in graph.astream(input_state, config, stream_mode=["messages", "updates"]):
+                events = await asyncio.to_thread(
+                    lambda: list(graph.stream(input_state, config, stream_mode=["messages", "updates"]))
+                )
+                for mode, payload in events:
                     if mode == "messages":
                         tok, metadata = payload
                         msg_class = type(tok).__name__
