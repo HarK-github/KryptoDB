@@ -39,12 +39,17 @@ class Authenticator:
 
     @staticmethod
     def _init_db(db_path: str) -> sqlite3.Connection:
-        try:
-            if db_path != ":memory:":
-                Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(db_path, check_same_thread=False)
-        except Exception:
+        if db_path == ":memory:":
             conn = sqlite3.connect(":memory:", check_same_thread=False)
+        else:
+            try:
+                Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+                conn = sqlite3.connect(db_path, check_same_thread=False)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to initialize SQLite API key store at '{db_path}': {exc}. "
+                    "Refusing to fall back to ephemeral :memory: SQLite."
+                ) from exc
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS api_keys (

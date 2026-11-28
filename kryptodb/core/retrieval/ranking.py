@@ -43,15 +43,9 @@ class PathReranker:
         if self._cross_encoder is not None:
             self._use_fallback = False
         else:
-            try:
-                import importlib
-                st = importlib.import_module("sentence_transformers")
-                self._cross_encoder = st.CrossEncoder(self.model_name)
-                self._use_fallback = False
-                logger.info("Loaded CrossEncoder model: %s", self.model_name)
-            except Exception as exc:
-                logger.info("CrossEncoder unavailable (%s); using lexical scoring fallback.", exc)
-                self._use_fallback = True
+            # No cross_encoder injected and none available — use lexical fallback.
+            # In production, inject a CrossEncoderReranker from infrastructure/embeddings.
+            self._use_fallback = True
 
     def compute_relevance_scores(self, query: str, candidate_texts: List[str]) -> List[float]:
         """Calculates semantic query-candidate relevance in [0, 1]."""

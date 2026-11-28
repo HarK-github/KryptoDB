@@ -123,7 +123,7 @@ class EncryptedRetrievalService:
         )
         return [(row["props"], int(row.get("hops", 1))) for row in rows]
 
-    def search(
+    def _search_scoped(
         self,
         query: str,
         context: RequestContext,
@@ -234,3 +234,52 @@ class EncryptedRetrievalService:
 
         results.sort(key=lambda r: r.final_score, reverse=True)
         return results[:top_k]
+
+    # ----- core.ports.Retriever protocol conformance -----
+
+    def retriever_search(
+        self,
+        query: str,
+        context: RequestContext,
+        top_k: int = 10,
+        max_hops: int = 2,
+        relevance_cutoff: Optional[float] = None,
+    ) -> List[AttributedMemoryResult]:
+        """Retriever protocol wrapper: fans out across all context scopes and deduplicates."""
+        scopes = [s for s in list(context.active_scopes) if s and s != "*"] or ["default"]
+        combined: List[AttributedMemoryResult] = []
+        seen_ids: set = set()
+        for sc in scopes:
+            for hit in self._search_scoped(query=query, context=context, scope=sc, top_k=top_k):
+                if hit.fact_id not in seen_ids:
+                    seen_ids.add(hit.fact_id)
+                    combined.append(hit)
+        combined.sort(key=lambda r: r.final_score, reverse=True)
+        return combined[:top_k]
+
+    def search(
+        self,
+        query: str,
+        context: RequestContext,
+        top_k: int = 10,
+        max_hops: int = 2,
+        relevance_cutoff: Optional[float] = None,
+        scope: Optional[str] = None,
+        max_fanout: int = 50,
+    ) -> List[AttributedMemoryResult]:
+        """core.ports.Retriever protocol implementation (supports optional single-scope override)."""
+        if scope is not None:
+            return self._search_scoped(
+                query=query,
+                context=context,
+                scope=scope,
+                top_k=top_k,
+                max_fanout=max_fanout,
+            )
+        return self.retriever_search(
+            query=query,
+            context=context,
+            top_k=top_k,
+            max_hops=max_hops,
+            relevance_cutoff=relevance_cutoff,
+        )

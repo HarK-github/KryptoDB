@@ -8,17 +8,27 @@ from typing import Any, Dict, List, Optional
 
 from kryptodb.core.context import RequestContext
 from kryptodb.core.filters import FilterBuilder
-from kryptodb.infrastructure.neo4j.client import neo4j_client
-from kryptodb.infrastructure.neo4j.queries import TRAVERSAL_1HOP_QUERY, TRAVERSAL_2HOP_EXPANSION_QUERY
 
 logger = logging.getLogger("kryptodb.core.retrieval.traversal")
+
+# Cypher query strings injected from infrastructure at startup by wire_runtime_services().
+# Kept as module-level mutable so the composition root can set them once.
+TRAVERSAL_1HOP_QUERY: str = ""
+TRAVERSAL_2HOP_EXPANSION_QUERY: str = ""
+
+
+def configure_traversal(traversal_1hop: str, traversal_2hop: str) -> None:
+    """Called once from kryptodb/daemon/app.py to inject Cypher query strings."""
+    global TRAVERSAL_1HOP_QUERY, TRAVERSAL_2HOP_EXPANSION_QUERY
+    TRAVERSAL_1HOP_QUERY = traversal_1hop
+    TRAVERSAL_2HOP_EXPANSION_QUERY = traversal_2hop
 
 
 class MultiHopTraverser:
     """Executes cycle-safe 1-to-2 hop traversals with hub suppression and stratified candidate pooling."""
 
     def __init__(self, client: Any = None, max_hub_degree: int = 50):
-        self.client = client or neo4j_client
+        self.client = client  # injected from composition root; None → no-op gracefully
         self.max_hub_degree = max_hub_degree
 
     def traverse_from_seeds(

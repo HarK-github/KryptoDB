@@ -60,18 +60,20 @@ flowchart TD
     end
 
     subgraph Ports ["Core Protocols (kryptodb/core/ports.py)"]
-        Port_Mem["MemoryStore Protocol"]
+        Port_Mem["MemoryStore Protocol<br/>(incl. propose_atomic)"]
+        Port_Ret["Retriever Protocol<br/>(PlaintextNeo4jRetriever / EncryptedRetrievalService)"]
         Port_Evt["EventStore Protocol"]
         Port_Emb["Embedder Protocol"]
         Port_Rer["Reranker Protocol"]
     end
 
     subgraph Infrastructure ["Infrastructure & Storage (kryptodb/infrastructure/)"]
-        Neo4j_Store["Neo4jMemoryStore<br/>(kryptodb/infrastructure/neo4j/store.py)"]
+        Neo4j_Store["Neo4jMemoryStore / EncryptedNeo4jMemoryStore"]
+        Neo4j_Ret["PlaintextNeo4jRetriever / EncryptedRetrievalService"]
         Neo4j_Queries["Centralized Cypher Repository<br/>(kryptodb/infrastructure/neo4j/queries.py)"]
         Neo4j_DB[("Neo4j 5.x Graph Database<br/>• Entity & Fact Vector Indexes<br/>• Fulltext Lucene Indexes")]
         Redis_DB[("Redis 7.x Queue / Cache")]
-        Sentence_Emb["LocalSentenceEmbedder<br/>(all-MiniLM-L6-v2)"]
+        Sentence_Emb["LocalSentenceEmbedder & CrossEncoderReranker<br/>(kryptodb/infrastructure/embeddings/sentence_transformer.py)"]
     end
 
     Consumers --> Ingress
@@ -81,7 +83,9 @@ flowchart TD
     CoreDomain --> FilterBuilder
     CoreDomain --> Ports
     Ports --> Neo4j_Store
+    Ports --> Neo4j_Ret
     Neo4j_Store --> Neo4j_Queries
+    Neo4j_Ret --> Neo4j_Queries
     Neo4j_Queries --> Neo4j_DB
     Ports --> Redis_DB
     Ports --> Sentence_Emb
@@ -156,8 +160,10 @@ sequenceDiagram
    - Rejection of speculative or hypothetical statements.
 3. **[`DeltaExtractor`](../kryptodb/core/memory/delta_extractor.py)**: Takes active entity subgraph priors and conversation history to extract relative deltas (e.g., database upgrades, date shifts like *"push back 10 days"*, and pronoun coreferences).
 4. **[`EntityResolver`](../kryptodb/core/memory/entity_resolution.py)**: Employs conservative identity resolution:
-   - Auto-merges strictly on exact normalized name matching (`norm_name`).
-   - Near matches ($\ge 0.70$ edit distance or prefix overlap) produce `POSSIBLE_SAME_AS` candidates and prompt clarifications (*"Did you mean Alice Chen?"*), never auto-merging.
+   - Auto-merges strictly on exact normalized name matching (`norm_name`) + compatible entity type.
+   - Near matches ($\ge 0.70$ edit distance or prefix overlap, or vector $\ge 0.82$) produce `POSSIBLE_SAME_AS` candidates and prompt clarifications (*"Did you mean Alice Chen?"*).
+   - Optional pluggable `AliasArbiter` callback (`arbitrate_aliases()`) arbitrates candidate blocks (capped at 50) with strict safety invariants: any omitted candidate falls back to a singleton cluster `[name]`, and incompatible types or `< 0.90` confidence merges are split back to singletons.
+5. **[`EntitySummarizer`](../kryptodb/core/memory/entity_summarizer.py)**: Event-driven Hub Entity Summarizer triggered on `commit` / `supersede` / `revoke` when active degree $\ge$ `KRYPTODB_HUB_SUMMARY_MIN_DEGREE` (default `3`), producing an `EntityProfile` sealed via `EnvelopeCipher` (`AAD = kdb:v1:{scope}:{entity_id}:profile`) in encrypted mode.
 5. **[`PredicateRegistry`](../kryptodb/core/memory/predicates.py)**: Manages semantic predicates and cardinality:
    - **`Cardinality.ONE` (Functional)**: e.g., `LIVES_IN`, `WORKS_FOR` (per ADR 0002), `RUNS_ENGINE`, `LEAD_ARCHITECT`, `USES`, `DEPLOYED_ON`. New incoming higher-confidence facts supersede older active facts.
    - **`Cardinality.MANY` (Relational)**: e.g., `MEMBER_OF`, `CONTRIBUTES_TO`, `OWNS`, `HAS_SKILL`. Multiple target entities coexist.

@@ -368,16 +368,17 @@ kryptodb/
     context.py      # RequestContext (tenant, agent, role, scopes, permissions)
     filters.py      # FilterBuilder: the centralized choke point for all Cypher queries
     observability.py# OpenTelemetry tracer configuration
-    ports.py        # Core Protocols: MemoryStore, EventStore, Embedder, Reranker
-    identity/       # PolicyEngine (RBAC & scope gating), Authenticator (SQLite key store)
+    ports.py        # Core Protocols: MemoryStore, Retriever, EventStore, Embedder, Reranker
+    identity/       # PolicyEngine (RBAC & scope gating), Authenticator (fail-closed SQLite key store)
     memory/         # MemoryService, lifecycle state machine, conflict engine,
-                    # predicate registry, entity resolution, write policy
+                    # predicate registry, EntityResolver (AliasArbiter), EntitySummarizer, write policy
     retrieval/      # RetrievalService, hybrid search (RRF), cycle-safe traversal,
                     # ranking pipeline, query parsing, provenance attribution
     episodic/       # Episodic events and conversation summaries
     embeddings/     # Resilient embedder, versioning, failure queue
   infrastructure/
-    neo4j/          # Client, schema (indexes), Cypher queries, Neo4jStore, EncryptedStore
+    embeddings/     # Concrete LocalSentenceEmbedder & CrossEncoderReranker adapters
+    neo4j/          # Client, schema (indexes), Cypher queries, Neo4jMemoryStore, PlaintextNeo4jRetriever, EncryptedStore/Retrieval
     redis/          # Redis client and cache
     crypto/         # Keyring, AES-256-GCM envelope, HMAC blind indexing, RAMVectorIndex
     audit_ledger.py # Tamper-evident SHA-256 append-only hash-chained audit ledger
@@ -391,7 +392,7 @@ tests/
   eval/             # 50-query gold benchmark, strict Llama-3.3 evaluation suite
 scripts/
   run_eval_benchmark.py   # Benchmark evaluation runner
-  eval_ablations.py       # Multi-hop GraphRAG ablation runner (Vector vs Hybrid vs Graph)
+  eval_ablations.py       # 3-way GraphRAG ablation runner (Flat Vector vs Hybrid RRF 0-hop vs Full 2-Hop + Encrypted parity)
   eval_kryptodb_strict.py # Strict 5-test autonomous evaluation suite
 docs/
   ARCHITECTURE.md   # Authoritative system architecture specification

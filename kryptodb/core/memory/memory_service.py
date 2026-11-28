@@ -11,7 +11,7 @@ from kryptodb.core.context import RequestContext, create_system_context
 from kryptodb.core.memory.conflicts import ConflictAction, ConflictEngine
 from kryptodb.core.memory.lifecycle import transition
 from kryptodb.core.memory.models import MemoryRecord, MemoryStatus, MemoryType
-from kryptodb.core.memory.predicates import predicate_registry
+from kryptodb.core.memory.predicates import Cardinality, predicate_registry
 from kryptodb.core.memory.write_policy import validate_proposal
 from kryptodb.core.ports import EventStore, MemoryStore
 # Neo4j adapter is lazy-loaded inside MemoryService.__init__ to keep core/ decoupled from infrastructure.
@@ -29,21 +29,29 @@ class MemoryService:
         conflict_engine: Optional[ConflictEngine] = None,
         client: Any = None,
     ):
-        if store is not None:
-            self.client = client
-            neo_store = store
-        else:
-            try:
-                from kryptodb.infrastructure.neo4j.client import neo4j_client
-                from kryptodb.infrastructure.neo4j.store import Neo4jMemoryStore
-                self.client = client or neo4j_client
-                neo_store = Neo4jMemoryStore(client=self.client)
-            except ImportError:
-                self.client = client
-                neo_store = None
-        self.store: MemoryStore = store or neo_store
-        self.event_store: Optional[EventStore] = event_store or (neo_store if isinstance(neo_store, EventStore) else None)
-        self.conflict_engine: ConflictEngine = conflict_engine or ConflictEngine(self.store)
+        # store is injected by the composition root (daemon/app.py:wire_runtime_services).
+        # When store=None (module-level singleton at import time), the service is created
+        # in an unconfigured state; any method call before wiring will raise RuntimeError.
+        self.client = client
+        self.store: Optional[MemoryStore] = store
+        self.event_store: Optional[EventStore] = event_store or (store if isinstance(store, EventStore) else None)
+        self.conflict_engine: Optional[ConflictEngine] = conflict_engine or (ConflictEngine(store) if store else None)
+
+    def _require_store(self) -> MemoryStore:
+        if self.store is None:
+            raise RuntimeError(
+                "MemoryService is not configured. "
+                "Call wire_runtime_services() in kryptodb/daemon/app.py before serving requests."
+            )
+        return self.store
+
+    def configure(self, store: MemoryStore, event_store: Optional[EventStore] = None, client: Any = None) -> None:
+        """Wire concrete store into this singleton. Called from composition root."""
+        self.store = store
+        self.client = client
+        self.event_store = event_store or (store if isinstance(store, EventStore) else None)
+        if self.conflict_engine is None:
+            self.conflict_engine = ConflictEngine(store)
 
     def propose_memory(
         self,
@@ -78,7 +86,51 @@ class MemoryService:
         previous_version_id = None
         status = MemoryStatus.ACTIVE
 
-        # 2. Conflict evaluation
+        effective_scope = scope
+        if scope == "default" and context.active_scopes and "*" not in context.active_scopes:
+            effective_scope = next(iter(context.active_scopes))
+
+        import hashlib
+        idempotency_key = hashlib.sha256(
+            f"{context.tenant_id.lower()}:{effective_scope.lower()}:{subject.strip().lower()}:{norm_pred}:{obj.strip().lower()}".encode("utf-8")
+        ).hexdigest()
+
+        # Single-transaction atomic first-write / supersede guard for Cardinality.ONE
+        if (
+            not bypass_conflict_check
+            and predicate_registry.get_cardinality(norm_pred) == Cardinality.ONE
+            and hasattr(self.store, "propose_atomic")
+        ):
+            atomic_record = MemoryRecord(
+                id=f"fact-{uuid.uuid4().hex[:12]}",
+                subject=subject.strip(),
+                predicate=norm_pred,
+                object=obj.strip(),
+                description=description or f"{subject.strip()} {norm_pred} {obj.strip()}",
+                scope=effective_scope,
+                tenant_id=context.tenant_id,
+                status=MemoryStatus.ACTIVE,
+                version=1,
+                previous_version_id=None,
+                confidence=confidence,
+                valid_from=context.now,
+                source_agent_id=context.agent_id,
+                metadata={
+                    "source_event_id": source_event_id,
+                    "quote_substring": quote_substring,
+                    "session_id": session_id or context.session_id,
+                    "idempotency_key": idempotency_key,
+                },
+            )
+            return self.store.propose_atomic(
+                subject_norm=subject.strip().lower(),
+                predicate=norm_pred,
+                object_norm=obj.strip().lower(),
+                new_fact=atomic_record,
+                context=context,
+            )
+
+        # 2. Conflict evaluation (for Cardinality.MANY or stores without propose_atomic)
         if not bypass_conflict_check:
             eval_res = self.conflict_engine.evaluate(
                 subject=subject,

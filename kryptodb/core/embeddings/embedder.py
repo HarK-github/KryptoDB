@@ -1,11 +1,16 @@
-"""Core Embedder protocol implementation."""
+"""Core Embedder protocol implementation.
+
+LocalSentenceEmbedder is kept here as a HashEmbedder-compatible fallback
+for unit tests. Production concrete ML adapters are injected from the
+composition root.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import logging
 import os
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from kryptodb.core.embeddings.versioning import DEFAULT_EMBEDDING_METADATA, EmbeddingMetadata
 from kryptodb.core.ports import Embedder
@@ -14,7 +19,12 @@ logger = logging.getLogger("kryptodb.core.embeddings.embedder")
 
 
 class LocalSentenceEmbedder(Embedder):
-    """Local, CPU-friendly dense vector embedder implementing Embedder protocol."""
+    """Hash-based deterministic embedder for use in unit tests only.
+
+    If a real model is injected via ``model=`` it is used; otherwise a
+    fast SHA-256 deterministic fallback is used. Production code injects
+    a concrete Embedder adapter at startup.
+    """
 
     def __init__(
         self,
@@ -24,29 +34,10 @@ class LocalSentenceEmbedder(Embedder):
     ) -> None:
         self._meta = metadata or DEFAULT_EMBEDDING_METADATA
         self._model = model
-        self._use_fallback = False
+        self._use_fallback = True  # always fallback; real models live in infrastructure/
 
         if self._model is not None:
             self._use_fallback = False
-            return
-
-        should_use_real = (
-            use_real
-            if use_real is not None
-            else (os.getenv("KRYPTODB_USE_REAL_EMBEDDINGS", "0") == "1")
-        )
-
-        if should_use_real:
-            try:
-                import importlib
-                st = importlib.import_module("sentence_transformers")
-                self._model = st.SentenceTransformer(self._meta.model_name)
-                logger.info("SentenceTransformer loaded: %s", self._meta.model_name)
-            except Exception as exc:
-                logger.warning("Could not load real SentenceTransformer (%s): %s. Using deterministic fallback.", self._meta.model_name, exc)
-                self._use_fallback = True
-        else:
-            self._use_fallback = True
 
     @property
     def dimension(self) -> int:
@@ -96,3 +87,11 @@ class LocalSentenceEmbedder(Embedder):
 
 # Default singleton instance
 default_embedder = LocalSentenceEmbedder()
+
+
+def get_embedder() -> LocalSentenceEmbedder:
+    """Return the module-level default embedder (hash-based for unit tests).
+
+    Production code should instantiate infrastructure.embeddings.sentence_transformer.LocalSentenceEmbedder.
+    """
+    return default_embedder

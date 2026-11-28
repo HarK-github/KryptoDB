@@ -11,16 +11,25 @@ from kryptodb.core.observability import tracer
 from kryptodb.core.retrieval.hybrid_search import HybridSearchEngine, hybrid_search_engine
 from kryptodb.core.retrieval.traversal import MultiHopTraverser, multihop_traverser
 from kryptodb.core.retrieval.ranking import AttributedMemoryResult, PathReranker, path_reranker
-from kryptodb.infrastructure.neo4j.client import neo4j_client
-from kryptodb.infrastructure.neo4j.queries import RETROSPECTIVE_FACTS_QUERY
 
 logger = logging.getLogger("kryptodb.core.retrieval.service")
+
+# Injected from infrastructure at startup by wire_runtime_services().
+_RETROSPECTIVE_FACTS_QUERY: str = ""
+
+
+def configure_retrieval_queries(retrospective_query: str) -> None:
+    """Called once from kryptodb/daemon/app.py to inject Cypher query strings."""
+    global _RETROSPECTIVE_FACTS_QUERY
+    _RETROSPECTIVE_FACTS_QUERY = retrospective_query
 
 
 class RetrievalService:
     """Unified retrieval service providing hybrid vector + BM25 seed discovery,
 
     2-hop Cypher multi-hop traversal with cycle control, and composite cross-encoder reranking.
+    Delegates to an injected ``Retriever`` port when set; falls back to the built-in GraphRAG
+    pipeline otherwise.
     """
 
     def __init__(
@@ -29,13 +38,13 @@ class RetrievalService:
         traverser: Optional[MultiHopTraverser] = None,
         reranker: Optional[PathReranker] = None,
         client: Any = None,
-        encrypted_retrieval: Any = None,
+        retriever: Any = None,
     ):
-        self.client = client or neo4j_client
+        self.client = client  # injected; None → retrospective-edge queries silently skipped
         self.hybrid_engine = hybrid_engine or hybrid_search_engine
         self.traverser = traverser or multihop_traverser
         self.reranker = reranker or path_reranker
-        self.encrypted_retrieval = encrypted_retrieval
+        self.retriever = retriever  # optional Retriever port (plaintext or encrypted)
 
     def search(
         self,
@@ -50,7 +59,7 @@ class RetrievalService:
         with tracer.start_as_current_span("retrieval.search") as span:
             span.set_attribute("query", query)
             span.set_attribute("tenant_id", tenant_id)
-            if self.encrypted_retrieval is not None:
+            if self.retriever is not None:
                 from kryptodb.core.context import RequestContext
                 scopes_to_query = [s for s in (active_scopes or ["default"]) if s and s != "*"] or ["default"]
                 ctx = RequestContext.create(
@@ -59,15 +68,13 @@ class RetrievalService:
                     active_scopes=scopes_to_query,
                     now=now,
                 )
-                combined: List[AttributedMemoryResult] = []
-                seen_ids = set()
-                for sc in scopes_to_query:
-                    for hit in self.encrypted_retrieval.search(query=query, context=ctx, scope=sc, top_k=top_k):
-                        if hit.fact_id not in seen_ids:
-                            seen_ids.add(hit.fact_id)
-                            combined.append(hit)
-                combined.sort(key=lambda r: r.final_score, reverse=True)
-                return combined[:top_k]
+                return self.retriever.search(
+                    query=query,
+                    context=ctx,
+                    top_k=top_k,
+                    max_hops=max_hops,
+                    relevance_cutoff=relevance_cutoff,
+                )
             return self._search_graphrag(
                 query, tenant_id, active_scopes, top_k, max_hops, relevance_cutoff, now
             )
@@ -281,7 +288,7 @@ class RetrievalService:
         if not getattr(self.client, "driver", None) and not hasattr(self.client, "execute_query_with_retry"):
             return []
 
-        retro_query = RETROSPECTIVE_FACTS_QUERY
+        retro_query = _RETROSPECTIVE_FACTS_QUERY
         try:
             params = {
                 "seed_ids": seed_ids,

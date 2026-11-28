@@ -242,8 +242,10 @@ RETURN ep.id AS id
 
 REVOKE_BY_USER_QUERY = """
 MATCH ()-[r:FACT {tenant_id: $tenant_id}]->()
-WHERE r.user_id = $user_id OR r.source_agent_id = $user_id
+WHERE (r.user_id = $user_id OR r.source_agent_id = $user_id)
+  AND ($is_system = true OR r.scope IN $active_scopes)
 SET r.status = 'revoked',
+    r.predicate = 'REVOKED',
     r.valid_until = $now,
     r.recorded_to = $now,
     r.description = NULL,
@@ -253,16 +255,90 @@ RETURN count(r) AS revoked_count
 
 PURGE_USER_EVENTS_QUERY = """
 MATCH (ev:Event {tenant_id: $tenant_id})
-WHERE ev.user_id = $user_id OR ev.agent_id = $user_id
+WHERE (ev.user_id = $user_id OR ev.agent_id = $user_id)
+  AND ($is_system = true OR ev.scope IN $active_scopes)
 DETACH DELETE ev
 RETURN count(ev) AS deleted_events
 """
 
 PURGE_USER_EPISODES_QUERY = """
 MATCH (ep:Episode {tenant_id: $tenant_id})
-WHERE ep.user_id = $user_id OR ep.agent_id = $user_id
+WHERE (ep.user_id = $user_id OR ep.agent_id = $user_id)
+  AND ($is_system = true OR ep.scope IN $active_scopes)
 DETACH DELETE ep
 RETURN count(ep) AS deleted_episodes
+"""
+
+ATOMIC_WRITE_CARDINALITY_ONE_QUERY = """
+MERGE (s:Entity {norm_name: $s_norm_name, tenant_id: $tenant_id})
+ON CREATE SET s.id = $s_id,
+              s.name = $s_name,
+              s.embedding = $s_emb,
+              s.embedding_pending = $s_pending,
+              s.created_at = $now,
+              s.updated_at = $now
+ON MATCH SET s.name = coalesce(s.name, $s_name),
+             s.embedding = coalesce(s.embedding, $s_emb),
+             s.updated_at = $now
+SET s._write_lock = true
+
+MERGE (o:Entity {norm_name: $o_norm_name, tenant_id: $tenant_id})
+ON CREATE SET o.id = $o_id,
+              o.name = $o_name,
+              o.embedding = $o_emb,
+              o.embedding_pending = $o_pending,
+              o.created_at = $now,
+              o.updated_at = $now
+ON MATCH SET o.name = coalesce(o.name, $o_name),
+             o.embedding = coalesce(o.embedding, $o_emb),
+             o.updated_at = $now
+
+WITH s, o
+OPTIONAL MATCH (s)-[existing:FACT {predicate: $predicate, tenant_id: $tenant_id, scope: $scope, status: 'active'}]->(old_o:Entity)
+
+WITH s, o, existing, old_o,
+     (existing IS NOT NULL AND old_o.norm_name = $o_norm_name) AS is_duplicate,
+     (existing IS NOT NULL AND old_o.norm_name <> $o_norm_name AND ($confidence >= existing.confidence OR $is_explicit_mutation = true)) AS should_supersede,
+     (existing IS NOT NULL AND old_o.norm_name <> $o_norm_name AND $confidence < existing.confidence AND $is_explicit_mutation = false) AS should_conflict
+
+FOREACH (_ IN CASE WHEN should_supersede THEN [1] ELSE [] END |
+    SET existing.status = 'superseded',
+        existing.valid_until = $now,
+        existing.recorded_to = $now,
+        existing.superseded_by = $fact_id
+)
+
+FOREACH (_ IN CASE WHEN is_duplicate THEN [] ELSE [1] END |
+    CREATE (s)-[r:FACT {
+        id: $fact_id,
+        idempotency_key: $idempotency_key,
+        predicate: $predicate,
+        description: $description,
+        embedding: $rel_emb,
+        embedding_pending: $rel_pending,
+        scope: $scope,
+        tenant_id: $tenant_id,
+        status: CASE WHEN should_conflict THEN 'conflicted' ELSE 'active' END,
+        version: CASE WHEN existing IS NOT NULL THEN coalesce(existing.version, 1) + 1 ELSE $version END,
+        previous_version_id: CASE WHEN should_supersede THEN existing.id ELSE NULL END,
+        confidence: $confidence,
+        trust_weight: $trust_weight,
+        valid_from: $valid_from,
+        valid_until: $valid_until,
+        recorded_from: $now,
+        recorded_to: NULL,
+        source_agent_id: $source_agent_id,
+        dataset_id: $dataset_id,
+        created_at: $now
+    }]->(o)
+)
+
+REMOVE s._write_lock
+
+WITH s, o, existing, is_duplicate, should_conflict
+OPTIONAL MATCH (s)-[res_r:FACT {predicate: $predicate, tenant_id: $tenant_id, scope: $scope}]->(o)
+WHERE (is_duplicate AND res_r.id = existing.id) OR (NOT is_duplicate AND res_r.id = $fact_id)
+RETURN s, res_r AS r, o, is_duplicate, should_conflict
 """
 
 GRAPH_SNAPSHOT_NODES_QUERY = """

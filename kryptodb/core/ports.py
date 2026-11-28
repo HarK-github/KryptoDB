@@ -142,6 +142,34 @@ class MemoryStore(Protocol):
     def revoke_by_user(self, user_id: str, context: RequestContext) -> int:
         ...
 
+    def propose_atomic(
+        self,
+        subject_norm: str,
+        predicate: str,
+        object_norm: str,
+        new_fact: "MemoryRecord",
+        context: RequestContext,
+    ) -> "MemoryRecord":
+        """Single-transaction atomic first-write guard for Cardinality.ONE facts."""
+        ...
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    """Protocol for the full GraphRAG retrieval pipeline (plaintext or encrypted).
+
+    Both PlaintextNeo4jRetriever and EncryptedRetrievalService must implement this exact signature.
+    """
+
+    def search(
+        self,
+        query: str,
+        context: RequestContext,
+        top_k: int = 10,
+        max_hops: int = 2,
+        relevance_cutoff: Optional[float] = None,
+    ) -> List[Any]: ...  # List[AttributedMemoryResult] — imported from retrieval.ranking at runtime
+
 
 @runtime_checkable
 class EventStore(Protocol):

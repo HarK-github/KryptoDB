@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
-from kryptodb.storage.neo4j_client import neo4j_client
+from fastapi import APIRouter, Request
+from kryptodb.infrastructure.neo4j.client import neo4j_client
 
 router = APIRouter(tags=["Health"])
 
 
 @router.get("/health")
 @router.get("/healthz")
-async def health_check():
-    return {"status": "ok", "service": "kryptodb", "version": "0.2.0"}
+async def health_check(request: Request):
+    payload = {"status": "ok", "service": "kryptodb", "version": "0.2.0"}
+    audit_status = getattr(request.app.state, "latest_plaintext_audit", None)
+    if audit_status is not None:
+        payload["plaintext_audit"] = audit_status
+    return payload
 
 
 @router.get("/ready")

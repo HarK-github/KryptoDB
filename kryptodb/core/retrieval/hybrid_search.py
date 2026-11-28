@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -10,21 +9,25 @@ from kryptodb.core.retrieval.rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger("kryptodb.hybrid_search")
 
+# Registry of Cypher queries injected from infrastructure at startup.
+# Maps query name -> Cypher string; populated by wire_runtime_services().
+_QUERY_REGISTRY: Dict[str, str] = {}
+_NEO4J_CLIENT: Any = None
+
 
 def _get_neo4j_client() -> Any:
-    try:
-        mod = importlib.import_module("kryptodb.infrastructure.neo4j.client")
-        return getattr(mod, "neo4j_client", None)
-    except Exception:
-        return None
+    return _NEO4J_CLIENT
 
 
 def _get_query(query_name: str) -> str:
-    try:
-        mod = importlib.import_module("kryptodb.infrastructure.neo4j.queries")
-        return getattr(mod, query_name, "")
-    except Exception:
-        return ""
+    return _QUERY_REGISTRY.get(query_name, "")
+
+
+def configure_hybrid_search(client: Any, queries: Dict[str, str]) -> None:
+    """Called once from the composition root (daemon/app.py) to inject Neo4j client + queries."""
+    global _NEO4J_CLIENT, _QUERY_REGISTRY
+    _NEO4J_CLIENT = client
+    _QUERY_REGISTRY.update(queries)
 
 
 STOP_WORDS = {

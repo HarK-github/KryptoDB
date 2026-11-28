@@ -5,12 +5,41 @@ from __future__ import annotations
 import difflib
 import logging
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
+
+from pydantic import BaseModel, Field
 
 from kryptodb.core.context import RequestContext
 from kryptodb.core.ports import Embedder, EntityRecord, MemoryStore
 
 logger = logging.getLogger("kryptodb.core.memory.entity_resolution")
+
+
+class AliasCandidateContext(BaseModel):
+    """Disambiguation context passed to an optional AliasArbiter."""
+
+    name: str
+    entity_type: Optional[str] = None
+    summary: Optional[str] = None
+    top_facts: List[str] = Field(default_factory=list)
+
+
+class AliasCluster(BaseModel):
+    """Resolved alias group returned by an AliasArbiter."""
+
+    canonical_name: str
+    aliases: List[str]
+    entity_type: Optional[str] = None
+    confidence: float = 1.0
+
+
+class AliasClusterResult(BaseModel):
+    """Strict Pydantic output schema for Block-then-LLM alias arbitration."""
+
+    clusters: List[AliasCluster] = Field(default_factory=list)
+
+
+AliasArbiter = Callable[[Optional[str], List[AliasCandidateContext]], AliasClusterResult]
 
 
 @dataclass
@@ -40,8 +69,112 @@ class EntityResolver:
        facts must not be invented or guessed about them.
     """
 
-    def __init__(self, fuzzy_threshold: float = 0.82):
+    def __init__(
+        self,
+        fuzzy_threshold: float = 0.82,
+        arbiter: Optional[AliasArbiter] = None,
+    ):
         self.fuzzy_threshold = fuzzy_threshold
+        self.arbiter = arbiter
+
+    def arbitrate_aliases(
+        self,
+        candidates: List[AliasCandidateContext],
+        entity_type: Optional[str] = None,
+        arbiter: Optional[AliasArbiter] = None,
+    ) -> AliasClusterResult:
+        """Stage 2 Block-then-LLM alias arbitration with strict safety invariants.
+
+        Invariants:
+        1. Any candidate omitted by the arbiter falls back to a singleton cluster [name].
+        2. Entities with incompatible types never merge; clusters below 0.90 confidence
+           with mixed specificity/types are split back to singletons.
+        """
+        if not candidates:
+            return AliasClusterResult(clusters=[])
+
+        capped = candidates[:50]
+        active_arbiter = arbiter or self.arbiter
+        if active_arbiter is None:
+            return AliasClusterResult(
+                clusters=[
+                    AliasCluster(
+                        canonical_name=c.name,
+                        aliases=[c.name],
+                        entity_type=c.entity_type or entity_type,
+                        confidence=1.0,
+                    )
+                    for c in capped
+                ]
+            )
+
+        raw_result = active_arbiter(entity_type, capped)
+        by_norm: dict[str, AliasCandidateContext] = {
+            normalize_entity_name(c.name): c for c in capped
+        }
+        seen_norms: set[str] = set()
+        safe_clusters: List[AliasCluster] = []
+
+        for cluster in raw_result.clusters:
+            member_names = list(dict.fromkeys(cluster.aliases or [cluster.canonical_name]))
+            valid_members = [m for m in member_names if normalize_entity_name(m) in by_norm]
+            if not valid_members:
+                continue
+
+            # Check type compatibility across cluster members
+            member_types = {
+                (by_norm[normalize_entity_name(m)].entity_type or "").strip().upper()
+                for m in valid_members
+                if by_norm[normalize_entity_name(m)].entity_type
+            }
+            if len(member_types) > 1 or (len(valid_members) > 1 and cluster.confidence < 0.90):
+                # Safety invariant #2: split incompatible or low-confidence merges into singletons
+                for m in valid_members:
+                    nm = normalize_entity_name(m)
+                    if nm not in seen_norms:
+                        seen_norms.add(nm)
+                        cand = by_norm[nm]
+                        safe_clusters.append(
+                            AliasCluster(
+                                canonical_name=cand.name,
+                                aliases=[cand.name],
+                                entity_type=cand.entity_type or entity_type,
+                                confidence=1.0,
+                            )
+                        )
+                continue
+
+            unseen_members = [m for m in valid_members if normalize_entity_name(m) not in seen_norms]
+            if not unseen_members:
+                continue
+            for m in unseen_members:
+                seen_norms.add(normalize_entity_name(m))
+
+            canon = cluster.canonical_name if cluster.canonical_name in unseen_members else unseen_members[0]
+            safe_clusters.append(
+                AliasCluster(
+                    canonical_name=canon,
+                    aliases=unseen_members,
+                    entity_type=cluster.entity_type or (next(iter(member_types), None) if member_types else entity_type),
+                    confidence=cluster.confidence,
+                )
+            )
+
+        # Safety invariant #1: every omitted candidate falls back to a singleton cluster
+        for c in capped:
+            nm = normalize_entity_name(c.name)
+            if nm not in seen_norms:
+                seen_norms.add(nm)
+                safe_clusters.append(
+                    AliasCluster(
+                        canonical_name=c.name,
+                        aliases=[c.name],
+                        entity_type=c.entity_type or entity_type,
+                        confidence=1.0,
+                    )
+                )
+
+        return AliasClusterResult(clusters=safe_clusters)
 
     def resolve(
         self,

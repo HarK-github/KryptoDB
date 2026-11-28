@@ -490,7 +490,6 @@ def create_recall_node(llm: Optional[Any] = None):
                     break
 
             try:
-                pass  # uses module-level get_agent
                 agent = get_agent(state.agent_id)
                 allowed_scopes = agent.get("allowed_scopes", []) if agent else ([state.user_scope] if state.user_scope and state.user_scope != "AUTO" else [])
             except Exception:
@@ -636,22 +635,24 @@ def synthesize_graph_answer(latest_msg: str, real_facts: List[Dict[str, Any]]) -
 
     answers: List[str] = []
 
-    # 1. Multi-hop Upstream Trace (e.g. Billing Engine -> Ledger Prime -> Spanner / Dr. Aris Thorne -> VP Sarah Connor)
-    if any(w in msg_low for w in ("upstream", "trace", "failure", "dependent", "chain")) and "billing engine" in msg_low:
-        dep = adj.get("Billing Engine", {}).get("DEPENDS_ON", ["Ledger Prime"])[0]
-        db = adj.get(dep, {}).get("USES", ["Google Spanner"])[0]
-        arch = adj.get(dep, {}).get("LEAD_ARCHITECT", ["Dr. Aris Thorne"])[0]
-        rep = adj.get(arch, {}).get("REPORTS_TO", [None])[0] if arch in adj else None
-        if not rep:
-            rep_list = pred_map.get("REPORTS_TO", [])
-            if rep_list:
-                rep = rep_list[0][1]
-
-        rep_clause = f", who reports to {rep}" if rep else ""
-        answers.append(
-            f"Tracing upstream from Billing Engine: Billing Engine depends on {dep}, which uses {db} as its primary database. "
-            f"The lead architect for {dep} is {arch}{rep_clause}."
-        )
+    # 1. Generic multi-hop graph-path trace over retrieved triples
+    if any(w in msg_low for w in ("upstream", "trace", "failure", "dependent", "chain")):
+        start_entity = next((cand for cand in adj if cand.lower() in msg_low), primary_subject)
+        visited: set = set()
+        chain_clauses: List[str] = []
+        frontier = [start_entity] if start_entity in adj else []
+        while frontier:
+            cur = frontier.pop(0)
+            if cur in visited:
+                continue
+            visited.add(cur)
+            for pred, objs in adj.get(cur, {}).items():
+                for obj_val in objs:
+                    chain_clauses.append(f"{cur} {pred.replace('_', ' ').lower()} {obj_val}")
+                    if obj_val in adj and obj_val not in visited:
+                        frontier.append(obj_val)
+        if chain_clauses:
+            answers.append(f"Tracing graph paths from {start_entity}: " + "; ".join(chain_clauses) + ".")
 
     # 2. Architect / Leadership inquiry
     if any(w in msg_low for w in ("architect", "lead", "who is leading", "who leads")):
@@ -695,17 +696,20 @@ def synthesize_graph_answer(latest_msg: str, real_facts: List[Dict[str, Any]]) -
             else:
                 answers.append(f"No database configuration is currently recorded for {target_entity}.")
 
-    # 4. Connection / Route direct verification (Retraction / Negative Recall)
+    # 4. Connection / Route direct verification (generic over retrieved CONNECTS_TO triples)
     if any(w in msg_low for w in ("connect", "route", "direct")):
-        if "gateway kraken" in msg_low and "billing engine" in msg_low:
-            has_conn = any(
-                s.lower() == "gateway kraken" and o.lower() == "billing engine"
-                for s, o in pred_map.get("CONNECTS_TO", [])
-            )
-            if has_conn:
-                answers.append("Gateway Kraken actively connects directly to Billing Engine.")
-            else:
-                answers.append("Gateway Kraken does not connect directly to Billing Engine (no active connection on record).")
+        conn_pairs = pred_map.get("CONNECTS_TO", [])
+        matched_conns = [
+            f"{s} connects directly to {o}."
+            for s, o in conn_pairs
+            if s.lower() in msg_low or o.lower() in msg_low
+        ]
+        if matched_conns:
+            answers.extend(matched_conns)
+        elif conn_pairs:
+            answers.extend(f"{s} connects directly to {o}." for s, o in conn_pairs)
+        else:
+            answers.append("No active direct connection is recorded in the retrieved facts.")
 
     # 5. Production Cutover Date
     if any(w in msg_low for w in ("cutover", "date", "timeline", "when")):
@@ -759,7 +763,6 @@ def create_reasoning_node(llm: Optional[Any] = None):
                 break
 
         try:
-            pass  # uses module-level get_agent
             agent = get_agent(state.agent_id)
             allowed_scopes = agent.get("allowed_scopes", []) if agent else ([state.user_scope] if state.user_scope and state.user_scope != "AUTO" else [])
         except Exception:

@@ -28,6 +28,7 @@ from kryptodb.infrastructure.neo4j.client import neo4j_client
 from kryptodb.infrastructure.neo4j.queries import (
     APPEND_EVENT_QUERY,
     ATOMIC_SUPERSEDE_QUERY,
+    ATOMIC_WRITE_CARDINALITY_ONE_QUERY,
     ADD_ENTITY_QUERY,
     FIND_ACTIVE_BY_SUBJECT_PREDICATE_QUERY,
     FIND_BY_IDEMPOTENCY_KEY_QUERY,
@@ -348,28 +349,98 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
         )
 
     def revoke_by_user(self, user_id: str, context: RequestContext) -> int:
+        active_scopes = list(context.active_scopes)
         records = self._execute(
             REVOKE_BY_USER_QUERY,
             raise_on_error=True,
             tenant_id=context.tenant_id,
             user_id=user_id,
             now=context.now.isoformat(),
+            active_scopes=active_scopes,
+            is_system=bool(context.is_system),
         )
         self._execute(
             PURGE_USER_EVENTS_QUERY,
             raise_on_error=True,
             tenant_id=context.tenant_id,
             user_id=user_id,
+            active_scopes=active_scopes,
+            is_system=bool(context.is_system),
         )
         self._execute(
             PURGE_USER_EPISODES_QUERY,
             raise_on_error=True,
             tenant_id=context.tenant_id,
             user_id=user_id,
+            active_scopes=active_scopes,
+            is_system=bool(context.is_system),
         )
         if records:
             return int(records[0].get("revoked_count", 0))
         return 0
+
+    def propose_atomic(
+        self,
+        subject_norm: str,
+        predicate: str,
+        object_norm: str,
+        new_fact: MemoryRecord,
+        context: RequestContext,
+        is_explicit_mutation: bool = False,
+    ) -> MemoryRecord:
+        """Single-transaction atomic check-and-write for Cardinality.ONE predicates."""
+        now = context.now.isoformat()
+        desc = new_fact.description or f"{new_fact.subject} {new_fact.predicate} {new_fact.object}"
+
+        s_emb, s_pending = self.embedder.embed_with_resilience(new_fact.subject) if hasattr(self.embedder, "embed_with_resilience") else (self.embedder.embed(new_fact.subject), False)
+        o_emb, o_pending = self.embedder.embed_with_resilience(new_fact.object) if hasattr(self.embedder, "embed_with_resilience") else (self.embedder.embed(new_fact.object), False)
+        r_emb, r_pending = self.embedder.embed_with_resilience(desc) if hasattr(self.embedder, "embed_with_resilience") else (self.embedder.embed(desc), False)
+
+        params = {
+            "s_name": new_fact.subject.strip(),
+            "s_norm_name": subject_norm,
+            "s_id": f"ent-{uuid.uuid4().hex[:12]}",
+            "s_emb": s_emb,
+            "s_pending": s_pending,
+            "o_name": new_fact.object.strip(),
+            "o_norm_name": object_norm,
+            "o_id": f"ent-{uuid.uuid4().hex[:12]}",
+            "o_emb": o_emb,
+            "o_pending": o_pending,
+            "fact_id": new_fact.id,
+            "idempotency_key": new_fact.metadata.get("idempotency_key"),
+            "predicate": predicate.strip().upper(),
+            "description": desc,
+            "rel_emb": r_emb,
+            "rel_pending": r_pending,
+            "scope": new_fact.scope,
+            "tenant_id": new_fact.tenant_id,
+            "version": new_fact.version,
+            "confidence": float(new_fact.confidence),
+            "trust_weight": float(new_fact.trust_weight),
+            "valid_from": new_fact.valid_from.isoformat() if new_fact.valid_from else now,
+            "valid_until": new_fact.valid_until.isoformat() if new_fact.valid_until else None,
+            "source_agent_id": new_fact.source_agent_id,
+            "dataset_id": new_fact.metadata.get("dataset_id"),
+            "now": now,
+            "is_explicit_mutation": bool(is_explicit_mutation),
+        }
+        rows = self._execute(ATOMIC_WRITE_CARDINALITY_ONE_QUERY, raise_on_error=True, **params)
+        if rows:
+            row = rows[0]
+            r_node = row.get("r")
+            if r_node is not None and hasattr(r_node, "get"):
+                fact_id = r_node.get("id", new_fact.id)
+                status_val = r_node.get("status", new_fact.status.value)
+                version_val = r_node.get("version", new_fact.version)
+                return new_fact.model_copy(
+                    update={
+                        "id": fact_id,
+                        "status": MemoryStatus(status_val) if status_val in [s.value for s in MemoryStatus] else new_fact.status,
+                        "version": int(version_val) if version_val is not None else new_fact.version,
+                    }
+                )
+        return new_fact
 
     def traverse_2hop(
         self, seed_names: List[str], context: RequestContext, max_results: int = 25

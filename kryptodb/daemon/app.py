@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from dotenv import load_dotenv
@@ -29,11 +32,81 @@ from kryptodb.interfaces.http.routes.v1_routes import v1_router
 logger = logging.getLogger("kryptodb.app")
 
 
-def _bootstrap_encrypted_mode(app: FastAPI) -> None:
-    """Initializes v3 EncryptedNeo4jMemoryStore + RAMVectorIndex + EncryptedRetrievalService."""
-    from kryptodb.core.embeddings.embedder import get_embedder
+def wire_runtime_services(app: FastAPI, storage_mode: str) -> None:
+    """Sole composition root: instantiates and wires all concrete adapters into service singletons.
+
+    Called once during lifespan() startup. Reads KRYPTODB_STORAGE_MODE to choose the stack.
+    """
     from kryptodb.core.memory.memory_service import memory_service
-    from kryptodb.core.retrieval.service import retrieval_service
+    from kryptodb.core.retrieval.hybrid_search import configure_hybrid_search, hybrid_search_engine
+    from kryptodb.core.retrieval.ranking import path_reranker
+    from kryptodb.core.retrieval.service import configure_retrieval_queries, retrieval_service
+    from kryptodb.core.retrieval.traversal import configure_traversal
+    from kryptodb.infrastructure.embeddings.sentence_transformer import (
+        CrossEncoderReranker,
+        LocalSentenceEmbedder,
+    )
+    from kryptodb.infrastructure.neo4j import queries as _q
+
+    allow_ml_fallback = os.getenv("KRYPTODB_USE_REAL_EMBEDDINGS", "0") != "1"
+    embedder = LocalSentenceEmbedder(allow_fallback=allow_ml_fallback)
+    reranker = CrossEncoderReranker(allow_fallback=allow_ml_fallback)
+    hybrid_search_engine.embedder = embedder
+    if not reranker._use_fallback and reranker._model is not None:
+        path_reranker._cross_encoder = reranker._model
+        path_reranker._use_fallback = False
+
+    # Inject Cypher query strings into core/ modules (zero infrastructure imports in core/ at module level)
+    configure_hybrid_search(
+        client=neo4j_client,
+        queries={
+            "HYBRID_VECTOR_ENTITY_QUERY": getattr(_q, "HYBRID_VECTOR_ENTITY_QUERY", ""),
+            "HYBRID_FULLTEXT_ENTITY_QUERY": getattr(_q, "HYBRID_FULLTEXT_ENTITY_QUERY", ""),
+            "SEMANTIC_SEED_FALLBACK_ENTITY_QUERY": getattr(_q, "SEMANTIC_SEED_FALLBACK_ENTITY_QUERY", ""),
+            "SEMANTIC_SEED_FALLBACK_FACT_QUERY": getattr(_q, "SEMANTIC_SEED_FALLBACK_FACT_QUERY", ""),
+        },
+    )
+    configure_traversal(
+        traversal_1hop=getattr(_q, "TRAVERSAL_1HOP_QUERY", ""),
+        traversal_2hop=getattr(_q, "TRAVERSAL_2HOP_EXPANSION_QUERY", ""),
+    )
+    configure_retrieval_queries(retrospective_query=getattr(_q, "RETROSPECTIVE_FACTS_QUERY", ""))
+
+    if storage_mode == "encrypted":
+        _wire_encrypted_stack(app, memory_service, retrieval_service, embedder)
+    else:
+        _wire_plaintext_stack(app, memory_service, retrieval_service)
+
+
+def _wire_plaintext_stack(app: FastAPI, memory_service: Any, retrieval_service: Any) -> None:
+    """Wire Neo4jMemoryStore + PlaintextNeo4jRetriever into the service singletons."""
+    from kryptodb.core.retrieval.hybrid_search import hybrid_search_engine
+    from kryptodb.core.retrieval.ranking import path_reranker
+    from kryptodb.core.retrieval.traversal import multihop_traverser
+    from kryptodb.infrastructure.neo4j.plaintext_retriever import PlaintextNeo4jRetriever
+    from kryptodb.infrastructure.neo4j.queries import RETROSPECTIVE_FACTS_QUERY
+    from kryptodb.infrastructure.neo4j.store import Neo4jMemoryStore
+
+    store = Neo4jMemoryStore(client=neo4j_client)
+    retriever = PlaintextNeo4jRetriever(
+        hybrid_engine=hybrid_search_engine,
+        traverser=multihop_traverser,
+        reranker=path_reranker,
+        client=neo4j_client,
+        retrospective_query=RETROSPECTIVE_FACTS_QUERY,
+    )
+
+    memory_service.configure(store=store, client=neo4j_client)
+    retrieval_service.client = neo4j_client
+    retrieval_service.retriever = retriever
+
+    app.state.storage_mode = "plaintext"
+    logger.info("KryptoDB plaintext storage mode active.")
+
+
+def _wire_encrypted_stack(app: FastAPI, memory_service: Any, retrieval_service: Any, embedder: Any = None) -> None:
+    """Wire EncryptedNeo4jMemoryStore + EncryptedRetrievalService into the service singletons."""
+    from kryptodb.core.embeddings.embedder import get_embedder
     from kryptodb.infrastructure.crypto.keyring import LocalKeyFileProvider
     from kryptodb.infrastructure.crypto.ram_vector_index import RAMVectorIndex
     from kryptodb.infrastructure.neo4j.encrypted_retrieval import EncryptedRetrievalService
@@ -42,7 +115,7 @@ def _bootstrap_encrypted_mode(app: FastAPI) -> None:
 
     key_provider = LocalKeyFileProvider()  # fails closed if KRYPTODB_KEY_FILE is missing/invalid
     vector_index = RAMVectorIndex()
-    embedder = get_embedder()
+    embedder = embedder or get_embedder()
     embed_fn = embedder.embed
 
     enc_store = EncryptedNeo4jMemoryStore(
@@ -73,10 +146,32 @@ def _bootstrap_encrypted_mode(app: FastAPI) -> None:
     app.state.encrypted_retrieval = enc_retrieval
     app.state.plaintext_scanner = scanner
 
-    # Wire live services onto encrypted store & retrieval
-    memory_service.store = enc_store
-    retrieval_service.encrypted_retrieval = enc_retrieval
+    # Wire services: use enc_retrieval's Retriever-protocol search() method
+    memory_service.configure(store=enc_store, client=neo4j_client)
+    retrieval_service.client = neo4j_client
+    retrieval_service.retriever = enc_retrieval  # enc_retrieval.search() conforms to Retriever
+
     logger.info("KryptoDB encrypted storage mode active (kid=%s)", key_provider.bundle.current_kid)
+
+
+async def _plaintext_audit_loop(app: FastAPI, interval_seconds: int) -> None:
+    """Periodic background PlaintextAuditScanner loop for encrypted storage mode."""
+    scanner = getattr(app.state, "plaintext_scanner", None)
+    if scanner is None:
+        return
+    while True:
+        try:
+            report = await asyncio.to_thread(scanner.scan)
+            app.state.latest_plaintext_audit = {
+                "violation_count": report.violation_count,
+                "clean": report.clean,
+                "last_scan_ts": datetime.now(timezone.utc).isoformat(),
+            }
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("PlaintextAuditScanner background scan failed: %s", exc)
+        await asyncio.sleep(max(1, interval_seconds))
 
 
 @asynccontextmanager
@@ -100,19 +195,28 @@ async def lifespan(app: FastAPI):
     report = ensure_schema(neo4j_client.driver)
     logger.info("Schema & Index initialization report: %s", report)
 
-    # 4. Storage mode wiring (plaintext default or v3 encrypted)
+    # 4. Storage mode wiring via single composition root
     storage_mode = os.getenv("KRYPTODB_STORAGE_MODE", "plaintext").strip().lower()
-    if storage_mode == "encrypted":
-        _bootstrap_encrypted_mode(app)
-    else:
-        app.state.storage_mode = "plaintext"
+    wire_runtime_services(app, storage_mode)
 
-    yield
+    # 5. Start periodic PlaintextAuditScanner in encrypted mode
+    audit_task: asyncio.Task[None] | None = None
+    if storage_mode == "encrypted" and getattr(app.state, "plaintext_scanner", None) is not None:
+        interval = int(os.getenv("KRYPTODB_AUDIT_INTERVAL_SECONDS", "300"))
+        audit_task = asyncio.create_task(_plaintext_audit_loop(app, interval))
+
     try:
-        if neo4j_client.driver:
-            neo4j_client.driver.close()
-    except Exception:
-        pass
+        yield
+    finally:
+        if audit_task is not None:
+            audit_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await audit_task
+        try:
+            if neo4j_client.driver:
+                neo4j_client.driver.close()
+        except Exception:
+            pass
 
 
 def _cors_origins() -> list[str]:
