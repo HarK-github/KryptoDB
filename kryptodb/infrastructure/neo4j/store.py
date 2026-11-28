@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import unicodedata
 import uuid
@@ -35,6 +36,8 @@ from kryptodb.infrastructure.neo4j.queries import (
     FIND_ENTITY_QUERY,
     GET_FACT_QUERY,
     LIST_EVENTS_BY_SESSION_QUERY,
+    LIST_INCIDENT_FACTS_QUERY,
+    SAVE_ENTITY_PROFILE_QUERY,
     PURGE_USER_EPISODES_QUERY,
     PURGE_USER_EVENTS_QUERY,
     REVOKE_BY_USER_QUERY,
@@ -287,6 +290,50 @@ class Neo4jMemoryStore(MemoryStore, EventStore):
                 )
             )
         return scored
+
+    def list_incident_facts(
+        self, subject: str, context: RequestContext, limit: int = 25
+    ) -> List[Dict[str, Any]]:
+        filter_clause, params = FilterBuilder.build(context, alias="r")
+        query = LIST_INCIDENT_FACTS_QUERY.replace("{filter_clause}", filter_clause)
+        rows = self._execute(
+            query,
+            norm_subject=_norm_entity_name(subject),
+            limit=limit,
+            **params,
+        )
+        facts = []
+        for row in rows:
+            props = row.get("r", {})
+            props = dict(props) if hasattr(props, "items") else (props if isinstance(props, dict) else {})
+            facts.append({
+                "id": props.get("id", ""),
+                "subject": row.get("subject", subject),
+                "predicate": props.get("predicate", ""),
+                "object": row.get("object", ""),
+                "description": props.get("description"),
+                "status": props.get("status", "active"),
+                "valid_from": props.get("valid_from"),
+            })
+        return facts
+
+    def save_entity_profile(
+        self,
+        entity_id: str,
+        scope: str,
+        profile_payload: Dict[str, Any],
+        context: RequestContext,
+    ) -> None:
+        profile = profile_payload.get("profile")
+        if hasattr(profile, "model_dump"):
+            profile = profile.model_dump(mode="json")
+        self._execute(
+            SAVE_ENTITY_PROFILE_QUERY,
+            entity_name=entity_id,
+            tenant_id=context.tenant_id,
+            profile_json=json.dumps(profile if profile is not None else profile_payload, sort_keys=True),
+            now=context.now.isoformat(),
+        )
 
     def find_entity(self, name: str, context: RequestContext) -> Optional[EntityRecord]:
         records = self._execute(FIND_ENTITY_QUERY, name=name, tenant_id=context.tenant_id)

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from kryptodb.core.context import RequestContext, create_system_context
 from kryptodb.core.memory.conflicts import ConflictAction, ConflictEngine
+from kryptodb.core.memory.entity_resolution import EntityResolver, normalize_entity_name
 from kryptodb.core.memory.entity_summarizer import EntitySummarizer
 from kryptodb.core.memory.lifecycle import transition
 from kryptodb.core.memory.models import MemoryRecord, MemoryStatus, MemoryType
@@ -30,6 +31,7 @@ class MemoryService:
         conflict_engine: Optional[ConflictEngine] = None,
         client: Any = None,
         entity_summarizer: Optional[EntitySummarizer] = None,
+        entity_resolver: Optional[EntityResolver] = None,
     ):
         # store is injected by the composition root (daemon/app.py:wire_runtime_services).
         # When store=None (module-level singleton at import time), the service is created
@@ -39,6 +41,7 @@ class MemoryService:
         self.event_store: Optional[EventStore] = event_store or (store if isinstance(store, EventStore) else None)
         self.conflict_engine: Optional[ConflictEngine] = conflict_engine or (ConflictEngine(store) if store else None)
         self.entity_summarizer: Optional[EntitySummarizer] = entity_summarizer
+        self.entity_resolver: Optional[EntityResolver] = entity_resolver
 
     def _require_store(self) -> MemoryStore:
         if self.store is None:
@@ -54,8 +57,9 @@ class MemoryService:
         event_store: Optional[EventStore] = None,
         client: Any = None,
         entity_summarizer: Optional[EntitySummarizer] = None,
+        entity_resolver: Optional[EntityResolver] = None,
     ) -> None:
-        """Wire concrete store and optional summarizer into this singleton. Called from composition root."""
+        """Wire concrete store and optional summarizer/resolver into this singleton. Called from composition root."""
         self.store = store
         self.client = client
         self.event_store = event_store or (store if isinstance(store, EventStore) else None)
@@ -63,33 +67,50 @@ class MemoryService:
             self.conflict_engine = ConflictEngine(store)
         if entity_summarizer is not None:
             self.entity_summarizer = entity_summarizer
+        if entity_resolver is not None:
+            self.entity_resolver = entity_resolver
+
+    def _resolve_canonical_entity(self, name: str, context: RequestContext) -> str:
+        """Resolve an entity mention via exact match or optional AliasArbiter."""
+        cleaned = name.strip()
+        if self.entity_resolver is None or self.store is None or not cleaned:
+            return cleaned
+        try:
+            res = self.entity_resolver.resolve(cleaned, context, self.store)
+            if res.is_exact_merge and res.matched_entity is not None:
+                return res.matched_entity.name
+            if res.possible_candidates and self.entity_resolver.arbiter is not None:
+                from kryptodb.core.memory.entity_resolution import AliasCandidateContext
+                candidates = [AliasCandidateContext(name=cleaned)] + [
+                    AliasCandidateContext(
+                        name=ent.name,
+                        entity_type=ent.metadata.get("type") or ent.metadata.get("kind"),
+                    )
+                    for ent, _ in res.possible_candidates
+                ]
+                arb_res = self.entity_resolver.arbitrate_aliases(candidates)
+                norm_target = normalize_entity_name(cleaned)
+                for cluster in arb_res.clusters:
+                    if any(normalize_entity_name(a) == norm_target for a in cluster.aliases):
+                        return cluster.canonical_name
+        except Exception as exc:
+            logger.debug("Entity resolution skipped for '%s': %s", cleaned, exc)
+        return cleaned
 
     def _maybe_update_hub_summary(self, subject: str, scope: str, context: RequestContext, event_type: str) -> None:
         """Trigger event-driven EntitySummarizer when wired (never fails the primary write)."""
         if self.entity_summarizer is None or self.store is None:
             return
         try:
-            items = self.store.search_fulltext(subject, top_k=25, context=context) if hasattr(self.store, "search_fulltext") else []
-            incident_facts: List[Dict[str, Any]] = []
-            for it in items:
-                if getattr(it, "item_type", None) == "fact":
-                    rec = self.store.get_fact(it.item_id, context)
-                    if rec and rec.subject.strip().casefold() == subject.strip().casefold():
-                        incident_facts.append({
-                            "id": rec.id,
-                            "subject": rec.subject,
-                            "predicate": rec.predicate,
-                            "object": rec.object,
-                            "description": rec.description,
-                            "status": rec.status.value if hasattr(rec.status, "value") else str(rec.status),
-                            "valid_from": rec.valid_from.isoformat() if rec.valid_from else None,
-                        })
-            self.entity_summarizer.on_fact_change(
+            incident_facts = self.store.list_incident_facts(subject, context, limit=25)
+            profile_payload = self.entity_summarizer.on_fact_change(
                 entity_id=subject.strip(),
                 scope=scope,
                 incident_facts=incident_facts,
                 event_type=event_type,
             )
+            if profile_payload is not None:
+                self.store.save_entity_profile(subject.strip(), scope, profile_payload, context)
         except Exception as exc:
             logger.debug("EntitySummarizer update skipped for '%s': %s", subject, exc)
 
@@ -120,6 +141,10 @@ class MemoryService:
             event_store=self.event_store,
             session_id=session_id or context.session_id,
         )
+
+        if self.entity_resolver is not None:
+            subject = self._resolve_canonical_entity(subject, context)
+            obj = self._resolve_canonical_entity(obj, context)
 
         norm_pred = predicate_registry.normalize(predicate)
         version = 1

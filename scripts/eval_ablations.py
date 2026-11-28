@@ -116,23 +116,22 @@ def _run_mode(
                     )
                 )
             return results
-        # Plaintext flat vector-only: vector seed search, BM25=off, 0-hop traversal, rerank=off
-        seeds = hybrid_search_engine.find_semantic_fallback_seeds(
-            query=query, tenant_id=ctx.tenant_id, active_scopes=[scope], top_k=10
-        )
+        # Plaintext flat vector-only: :FACT vector search, BM25=off, 0-hop traversal, rerank=off
+        q_vec = hybrid_search_engine._embed_query(query)
+        vec_items = memory_service.store.search_vector(q_vec, top_k=10, context=ctx)
         return [
             AttributedMemoryResult(
-                fact_id=str(s.get("id", f"ent-{i}")),
-                summary=str(s.get("name", "")),
+                fact_id=str(it.item_id),
+                summary=str(it.text),
                 hops=0,
-                final_score=round(float(s.get("score", 0.0)), 4),
-                relevance_score=round(float(s.get("score", 0.0)), 4),
-                confidence=1.0,
+                final_score=round(float(it.score), 4),
+                relevance_score=round(float(it.score), 4),
+                confidence=float(it.metadata.get("confidence", 1.0)) if it.metadata else 1.0,
                 recency_score=1.0,
                 citation_tag=f"[{ctx.tenant_id}:{scope}]",
                 provenance_path=[],
             )
-            for i, s in enumerate(seeds[:10])
+            for it in vec_items[:10]
         ]
 
     if mode_name == "hybrid_rrf_0hop":

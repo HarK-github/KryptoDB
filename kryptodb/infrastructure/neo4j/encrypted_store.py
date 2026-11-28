@@ -23,6 +23,7 @@ from kryptodb.infrastructure.crypto.envelope import (
 from kryptodb.infrastructure.crypto.keyring import LocalKeyFileProvider
 from kryptodb.infrastructure.neo4j.encrypted_queries import (
     ATOMIC_SUPERSEDE_ENCRYPTED_FACT_QUERY,
+    ATOMIC_WRITE_ENCRYPTED_CARDINALITY_ONE_QUERY,
     CREATE_ENCRYPTED_ENTITY_QUERY,
     ENCRYPTED_SCHEMA_DDL,
     FIND_ACTIVE_ENCRYPTED_BY_BIDX_QUERY,
@@ -30,6 +31,8 @@ from kryptodb.infrastructure.neo4j.encrypted_queries import (
     FIND_IDEMPOTENCY_KEY_QUERY,
     FORGET_ENCRYPTED_FACT_QUERY,
     GET_ENCRYPTED_FACT_QUERY,
+    LIST_INCIDENT_ENCRYPTED_FACTS_QUERY,
+    SAVE_ENCRYPTED_ENTITY_PROFILE_QUERY,
     WRITE_ENCRYPTED_FACT_QUERY,
 )
 class StorageExecutionError(RuntimeError):
@@ -195,6 +198,159 @@ class EncryptedNeo4jMemoryStore:
         )
         self._sync_vector_upsert(scope, fact.id, desc)
         return fact
+
+    def propose_atomic(
+        self,
+        subject_norm: str,
+        predicate: str,
+        object_norm: str,
+        new_fact: MemoryRecord,
+        context: RequestContext,
+        is_explicit_mutation: bool = False,
+    ) -> MemoryRecord:
+        """Single-transaction atomic check-and-write for encrypted Cardinality.ONE predicates."""
+        now_iso = context.now.isoformat()
+        scope = new_fact.scope
+        desc = new_fact.description or f"{new_fact.subject} {new_fact.predicate} {new_fact.object}"
+        turn_id = str(new_fact.metadata.get("source_turn_id") or new_fact.metadata.get("source_event_id") or "")
+        idem_key = self.blind_index.compute_idempotency_key(scope, new_fact.subject, new_fact.predicate, new_fact.object, turn_id)
+
+        import hashlib
+        subject_entity_bidx = self.blind_index.compute("entity", new_fact.subject)
+        object_entity_bidx = self.blind_index.compute("entity", new_fact.object)
+        s_id = f"ent-{hashlib.sha256(f'{scope}:{subject_entity_bidx}'.encode()).hexdigest()[:16]}"
+        o_id = f"ent-{hashlib.sha256(f'{scope}:{object_entity_bidx}'.encode()).hexdigest()[:16]}"
+        s_sealed = self.cipher.seal_entity_name(scope, s_id, new_fact.subject.strip())
+        o_sealed = self.cipher.seal_entity_name(scope, o_id, new_fact.object.strip())
+
+        valid_from_iso = new_fact.valid_from.isoformat() if new_fact.valid_from else now_iso
+        valid_until_iso = new_fact.valid_until.isoformat() if new_fact.valid_until else None
+        status_str = new_fact.status.value if hasattr(new_fact.status, "value") else str(new_fact.status)
+
+        sealed = self.cipher.seal_fact(
+            fact_id=new_fact.id,
+            scope=scope,
+            version=new_fact.version,
+            status=status_str,
+            subject=new_fact.subject.strip(),
+            predicate=new_fact.predicate.strip().upper(),
+            obj=new_fact.object.strip(),
+            description=desc,
+            valid_from=valid_from_iso,
+            valid_until=valid_until_iso,
+            confidence=float(new_fact.confidence),
+            trust_weight=float(new_fact.trust_weight),
+            metadata=new_fact.metadata,
+        )
+
+        rows = self._run_query(
+            ATOMIC_WRITE_ENCRYPTED_CARDINALITY_ONE_QUERY,
+            s_id=s_id,
+            s_name_ct=s_sealed["name_ct"],
+            s_wrapped_dek=s_sealed["wrapped_dek"],
+            s_kid=s_sealed["kid"],
+            o_id=o_id,
+            o_name_ct=o_sealed["name_ct"],
+            o_wrapped_dek=o_sealed["wrapped_dek"],
+            o_kid=o_sealed["kid"],
+            subject_entity_bidx=self.blind_index.compute("entity", new_fact.subject),
+            object_entity_bidx=self.blind_index.compute("entity", new_fact.object),
+            idempotency_key=idem_key,
+            fact_id=new_fact.id,
+            scope=scope,
+            version=int(new_fact.version),
+            valid_from=valid_from_iso,
+            valid_until=valid_until_iso,
+            confidence=float(new_fact.confidence),
+            trust_weight=float(new_fact.trust_weight),
+            is_explicit_mutation=bool(is_explicit_mutation),
+            subject_bidx=self.blind_index.compute("subject", new_fact.subject),
+            predicate_bidx=self.blind_index.compute("predicate", new_fact.predicate),
+            object_bidx=self.blind_index.compute("object", new_fact.object),
+            search_tokens=self.blind_index.extract_search_tokens(new_fact.subject, new_fact.predicate, new_fact.object, desc),
+            knowledge_ct=sealed["knowledge_ct"],
+            wrapped_dek=sealed["wrapped_dek"],
+            kid=sealed["kid"],
+            now=now_iso,
+        )
+        if rows:
+            row = rows[0]
+            if row.get("should_supersede") and row.get("superseded_id"):
+                self.vector_index.remove(scope, str(row["superseded_id"]))
+            if row.get("is_duplicate") and row.get("fact_id"):
+                found = self.get_fact(str(row["fact_id"]), context, scope=scope)
+                if found is not None:
+                    return found
+            res_status = row.get("status", status_str)
+            if res_status == "active":
+                self._sync_vector_upsert(scope, new_fact.id, desc)
+            return new_fact.model_copy(
+                update={
+                    "status": MemoryStatus(res_status) if res_status in [s.value for s in MemoryStatus] else new_fact.status,
+                }
+            )
+        self._sync_vector_upsert(scope, new_fact.id, desc)
+        return new_fact
+
+    def list_incident_facts(
+        self, subject: str, context: RequestContext, limit: int = 25
+    ) -> List[Dict[str, Any]]:
+        scopes = sorted(scope for scope in context.active_scopes if scope and scope != "*")
+        if not scopes and context.is_system:
+            scopes = ["default"]
+        facts: List[Dict[str, Any]] = []
+        for scope in scopes:
+            rows = self._run_query(
+                LIST_INCIDENT_ENCRYPTED_FACTS_QUERY,
+                scope=scope,
+                subject_bidx=self.blind_index.compute("entity", subject),
+                now=context.now.isoformat(),
+                limit=max(limit - len(facts), 0),
+            )
+            for row in rows:
+                rec = self._decrypt_edge(row["props"])
+                if normalize("entity", rec.subject) != normalize("entity", subject) and normalize("entity", rec.object) != normalize("entity", subject):
+                    continue
+                facts.append({
+                    "id": rec.id,
+                    "subject": rec.subject,
+                    "predicate": rec.predicate,
+                    "object": rec.object,
+                    "description": rec.description,
+                    "status": rec.status.value,
+                    "valid_from": row["props"].get("valid_from"),
+                })
+                if len(facts) >= limit:
+                    return facts
+        return facts
+
+    def save_entity_profile(
+        self,
+        entity_id: str,
+        scope: str,
+        profile_payload: Dict[str, Any],
+        context: RequestContext,
+    ) -> None:
+        if scope not in context.active_scopes and not context.is_system:
+            raise PermissionError(f"Scope '{scope}' is not active in this request context")
+        sealed = profile_payload.get("sealed")
+        profile = profile_payload.get("profile")
+        if sealed is None and profile is not None:
+            if hasattr(profile, "model_dump"):
+                profile = profile.model_dump(mode="json")
+            sealed = self.cipher.seal_entity_profile(scope, entity_id, profile)
+        if not sealed or profile_payload.get("mode") != "encrypted":
+            raise ValueError("Encrypted storage requires a sealed entity profile payload")
+        self._run_query(
+            SAVE_ENCRYPTED_ENTITY_PROFILE_QUERY,
+            entity_id=entity_id,
+            scope=scope,
+            subject_bidx=self.blind_index.compute("entity", entity_id),
+            profile_ct=sealed["profile_ct"],
+            profile_wrapped_dek=sealed["profile_wrapped_dek"],
+            profile_kid=sealed["profile_kid"],
+            now=context.now.isoformat(),
+        )
 
     def get_fact(self, fact_id: str, context: RequestContext, scope: Optional[str] = None) -> Optional[MemoryRecord]:
         target_scope = scope or (next(iter(context.active_scopes)) if context.active_scopes else "default")

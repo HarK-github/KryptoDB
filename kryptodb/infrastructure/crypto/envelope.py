@@ -114,6 +114,49 @@ class EnvelopeCipher:
         new_wrapped = AESGCM(self.key_provider.bundle.enc_key).encrypt(new_nonce, dek, aad)
         return new_kid, f"{self.PREFIX}:{new_kid}:{_b64e(new_nonce)}.{_b64e(new_wrapped)}"
 
+    def seal_entity_profile(self, scope: str, entity_id: str, profile_dict: Dict[str, Any]) -> Dict[str, str]:
+        """Seal an entity profile using profile-specific authenticated associated data."""
+        aad = f"kdb:v1:{scope}:{entity_id}:profile".encode("utf-8")
+        bundle = self.key_provider.bundle
+        kid = bundle.current_kid
+        dek = AESGCM.generate_key(bit_length=256)
+        payload_nonce = os.urandom(12)
+        plaintext = json.dumps(profile_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ciphertext = AESGCM(dek).encrypt(payload_nonce, plaintext, aad)
+        wrap_nonce = os.urandom(12)
+        wrapped = AESGCM(bundle.enc_key).encrypt(wrap_nonce, dek, aad)
+        return {
+            "profile_kid": kid,
+            "profile_wrapped_dek": f"{self.PREFIX}:{kid}:{_b64e(wrap_nonce)}.{_b64e(wrapped)}",
+            "profile_ct": f"{self.PREFIX}:{kid}:{_b64e(payload_nonce)}.{_b64e(ciphertext)}",
+        }
+
+    def open_entity_profile(
+        self, scope: str, entity_id: str, sealed: Dict[str, str]
+    ) -> Dict[str, Any]:
+        """Open an entity profile, authenticating its scope and entity identity."""
+        profile_ct = sealed.get("profile_ct")
+        wrapped_dek = sealed.get("profile_wrapped_dek")
+        if not profile_ct or not wrapped_dek:
+            raise DecryptionKeyError("Entity profile is missing profile_ct or profile_wrapped_dek")
+        kid_c, payload_nonce, ciphertext = self._parse_sealed(profile_ct)
+        kid_w, wrap_nonce, wrapped = self._parse_sealed(wrapped_dek)
+        if kid_c != kid_w or sealed.get("profile_kid", kid_c) != kid_c:
+            raise IntegrityMismatchError("Entity profile kid does not match its sealed values")
+        enc_key = self.key_provider.bundle.get_enc_key(kid_c)
+        if enc_key is None:
+            raise DecryptionKeyError(f"Missing encryption key for kid '{kid_c}'")
+        aad = f"kdb:v1:{scope}:{entity_id}:profile".encode("utf-8")
+        try:
+            dek = AESGCM(enc_key).decrypt(wrap_nonce, wrapped, aad)
+            plaintext = AESGCM(dek).decrypt(payload_nonce, ciphertext, aad)
+            decoded = json.loads(plaintext.decode("utf-8"))
+        except Exception as exc:
+            raise DecryptionKeyError(f"AES-256-GCM profile decryption failed for entity '{entity_id}': {exc}") from exc
+        if not isinstance(decoded, dict):
+            raise IntegrityMismatchError("Decrypted entity profile is not a JSON object")
+        return decoded
+
     def seal_entity_name(self, scope: str, entity_id: str, name: str) -> Dict[str, str]:
         sealed = self._seal_json(scope, entity_id, version=1, payload={"name": name, "scope": scope})
         return {

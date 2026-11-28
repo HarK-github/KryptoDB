@@ -77,6 +77,7 @@ class EncryptedRetrievalService:
         now_iso: str,
         top_k: int,
         max_fanout: int,
+        max_hops: int = 2,
     ) -> List[Tuple[Dict[str, Any], int]]:
         q_vec = self.embed_fn(query)
         seed_hits = self.vector_index.search(scope, q_vec, top_k=top_k)
@@ -96,6 +97,8 @@ class EncryptedRetrievalService:
         for row in rows:
             props = row["props"]
             hops = int(row.get("hops", 1))
+            if max_hops == 0 and hops >= 2:
+                continue
             results.append((props, hops))
         results.sort(key=lambda item: (item[1], seed_rank.get(str(item[0].get("id")), 9999)))
         return results
@@ -106,6 +109,7 @@ class EncryptedRetrievalService:
         scope: str,
         now_iso: str,
         max_fanout: int,
+        max_hops: int = 2,
     ) -> List[Tuple[Dict[str, Any], int]]:
         bidx = self.store.blind_index
         terms = _tokenize_content(query)
@@ -121,7 +125,11 @@ class EncryptedRetrievalService:
             now=now_iso,
             max_results=max_fanout,
         )
-        return [(row["props"], int(row.get("hops", 1))) for row in rows]
+        return [
+            (row["props"], int(row.get("hops", 1)))
+            for row in rows
+            if not (max_hops == 0 and int(row.get("hops", 1)) >= 2)
+        ]
 
     def _search_scoped(
         self,
@@ -130,6 +138,8 @@ class EncryptedRetrievalService:
         scope: Optional[str] = None,
         top_k: int = 10,
         max_fanout: int = 50,
+        max_hops: int = 2,
+        relevance_cutoff: Optional[float] = None,
     ) -> List[AttributedMemoryResult]:
         if not query or not query.strip():
             return []
@@ -137,8 +147,12 @@ class EncryptedRetrievalService:
         target_scope = scope or (next(iter(context.active_scopes)) if context.active_scopes else "default")
         now_iso = context.now.isoformat()
 
-        path_a = self._path_a_semantic(query, target_scope, now_iso, top_k=top_k * 2, max_fanout=max_fanout)
-        path_b = self._path_b_blind_index(query, target_scope, now_iso, max_fanout=max_fanout)
+        path_a = self._path_a_semantic(
+            query, target_scope, now_iso, top_k=top_k * 2, max_fanout=max_fanout, max_hops=max_hops
+        )
+        path_b = self._path_b_blind_index(
+            query, target_scope, now_iso, max_fanout=max_fanout, max_hops=max_hops
+        )
 
         if not path_a and not path_b:
             return []
@@ -232,6 +246,8 @@ class EncryptedRetrievalService:
                 )
             )
 
+        if relevance_cutoff is not None:
+            results = [r for r in results if r.final_score >= relevance_cutoff]
         results.sort(key=lambda r: r.final_score, reverse=True)
         return results[:top_k]
 
@@ -250,7 +266,14 @@ class EncryptedRetrievalService:
         combined: List[AttributedMemoryResult] = []
         seen_ids: set = set()
         for sc in scopes:
-            for hit in self._search_scoped(query=query, context=context, scope=sc, top_k=top_k):
+            for hit in self._search_scoped(
+                query=query,
+                context=context,
+                scope=sc,
+                top_k=top_k,
+                max_hops=max_hops,
+                relevance_cutoff=relevance_cutoff,
+            ):
                 if hit.fact_id not in seen_ids:
                     seen_ids.add(hit.fact_id)
                     combined.append(hit)
@@ -275,6 +298,8 @@ class EncryptedRetrievalService:
                 scope=scope,
                 top_k=top_k,
                 max_fanout=max_fanout,
+                max_hops=max_hops,
+                relevance_cutoff=relevance_cutoff,
             )
         return self.retriever_search(
             query=query,

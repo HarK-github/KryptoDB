@@ -96,4 +96,5 @@ def test_hub_summarizer_min_degree_and_encrypted_sealing(tmp_path) -> None:
     assert out_enc["mode"] == "encrypted"
     assert out_enc["aad"] == "kdb:v1:research:Alice:profile"
     assert "profile" not in out_enc
-    assert out_enc["sealed"]["ciphertext"].startswith("kdb:v1:k1:")
+    assert out_enc["sealed"]["profile_ct"].startswith("kdb:v1:k1:")
+    assert cipher.open_entity_profile("research", "Alice", out_enc["sealed"])["entity_id"] == "Alice"

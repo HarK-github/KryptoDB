@@ -241,10 +241,11 @@ class EntityResolver:
             if ent_norm == norm_name:
                 continue
             ratio = difflib.SequenceMatcher(None, norm_name, ent_norm).ratio()
-            # Also check prefix / substring similarity (e.g. "Harshi" is a prefix of "Harshit")
+            # Also check prefix / substring / shared-token blocking (e.g. "Harshi" vs "Harshit", "Edwin Aldrin" vs "Buzz Aldrin")
             is_prefix = (norm_name.startswith(ent_norm) or ent_norm.startswith(norm_name)) and min(len(norm_name), len(ent_norm)) >= 4
-            if ratio >= 0.70 or is_prefix:
-                score = max(ratio, 0.85 if is_prefix else 0.75)
+            shared_token = bool({t for t in norm_name.split() if len(t) >= 4} & {t for t in ent_norm.split() if len(t) >= 4})
+            if ratio >= 0.70 or is_prefix or shared_token:
+                score = max(ratio, 0.85 if (is_prefix or shared_token) else 0.75)
                 possible_candidates.append((ent, score))
                 seen_cand_ids.add(ent.id)
 

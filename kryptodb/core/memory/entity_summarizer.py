@@ -99,8 +99,7 @@ class EntitySummarizer:
                     "EntitySummarizer in encrypted mode requires an EnvelopeCipher instance (cipher=)."
                 )
             aad = f"kdb:v1:{scope}:{entity_id}:profile"
-            # EnvelopeCipher._seal_json(scope, record_id, version, payload) builds AAD = kdb:v1:{scope}:{record_id}:{version}
-            sealed = self.cipher._seal_json(scope, entity_id, "profile", profile.model_dump())
+            sealed = self.cipher.seal_entity_profile(scope, entity_id, profile.model_dump())
             return {
                 "mode": "encrypted",
                 "entity_id": entity_id,

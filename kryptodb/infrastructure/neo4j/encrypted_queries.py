@@ -49,6 +49,27 @@ CREATE (n:Entity {
 RETURN n.id AS id
 """
 
+LIST_INCIDENT_ENCRYPTED_FACTS_QUERY = """
+MATCH (s:Entity)-[r:FACT {scope: $scope}]->(o:Entity)
+WHERE (s.name_bidx = $subject_bidx OR o.name_bidx = $subject_bidx)
+  AND r.status = 'active'
+  AND r.valid_from <= $now
+  AND (r.valid_until IS NULL OR r.valid_until > $now)
+RETURN properties(r) AS props
+ORDER BY r.created_at DESC
+LIMIT $limit
+"""
+
+SAVE_ENCRYPTED_ENTITY_PROFILE_QUERY = """
+MATCH (e:Entity {scope: $scope, name_bidx: $subject_bidx})
+SET e.profile_ct = $profile_ct,
+    e.profile_wrapped_dek = $profile_wrapped_dek,
+    e.profile_kid = $profile_kid,
+    e.updated_at = $now
+REMOVE e.profile_json
+RETURN e.id AS id
+"""
+
 FIND_IDEMPOTENCY_KEY_QUERY = """
 MATCH (k:IdempotencyKey {scope: $scope, key: $idempotency_key})
 RETURN k.fact_id AS fact_id
@@ -85,6 +106,89 @@ CREATE (s)-[r:FACT {
     created_at: $now
 }]->(o)
 RETURN r.id AS id
+"""
+
+ATOMIC_WRITE_ENCRYPTED_CARDINALITY_ONE_QUERY = """
+MERGE (s:Entity {id: $s_id})
+ON CREATE SET s.scope = $scope,
+              s.name_bidx = $subject_entity_bidx,
+              s.name_ct = $s_name_ct,
+              s.wrapped_dek = $s_wrapped_dek,
+              s.kid = $s_kid,
+              s.created_at = $now,
+              s.updated_at = $now
+ON MATCH SET s.updated_at = $now
+SET s._write_lock = true
+
+MERGE (o:Entity {id: $o_id})
+ON CREATE SET o.scope = $scope,
+              o.name_bidx = $object_entity_bidx,
+              o.name_ct = $o_name_ct,
+              o.wrapped_dek = $o_wrapped_dek,
+              o.kid = $o_kid,
+              o.created_at = $now,
+              o.updated_at = $now
+ON MATCH SET o.updated_at = $now
+
+WITH s, o
+LIMIT 1
+OPTIONAL MATCH (s)-[existing_rel:FACT {
+    scope: $scope,
+    subject_bidx: $subject_bidx,
+    predicate_bidx: $predicate_bidx,
+    status: 'active'
+}]->(old_o:Entity)
+
+WITH s, o, collect(existing_rel)[0] AS existing
+WITH s, o, existing,
+     (existing IS NOT NULL AND existing.object_bidx = $object_bidx) AS is_duplicate,
+     (existing IS NOT NULL AND existing.object_bidx <> $object_bidx AND ($confidence >= existing.confidence OR $is_explicit_mutation = true)) AS should_supersede,
+     (existing IS NOT NULL AND existing.object_bidx <> $object_bidx AND $confidence < existing.confidence AND $is_explicit_mutation = false) AS should_conflict
+
+FOREACH (_ IN CASE WHEN should_supersede THEN [1] ELSE [] END |
+    SET existing.status = 'superseded',
+        existing.valid_until = $now,
+        existing.recorded_to = $now,
+        existing.superseded_by = $fact_id
+)
+
+FOREACH (_ IN CASE WHEN is_duplicate THEN [] ELSE [1] END |
+    MERGE (k:IdempotencyKey {scope: $scope, key: $idempotency_key})
+    ON CREATE SET k.fact_id = $fact_id,
+                  k.created_at = $now
+    ON MATCH SET k.fact_id = $fact_id
+    CREATE (s)-[r:FACT {
+        id: $fact_id,
+        scope: $scope,
+        status: CASE WHEN should_conflict THEN 'conflicted' ELSE 'active' END,
+        version: $version,
+        previous_version_id: CASE WHEN should_supersede THEN existing.id ELSE NULL END,
+        valid_from: $valid_from,
+        valid_until: $valid_until,
+        recorded_from: $now,
+        recorded_to: NULL,
+        confidence: $confidence,
+        trust_weight: $trust_weight,
+        subject_bidx: $subject_bidx,
+        predicate_bidx: $predicate_bidx,
+        object_bidx: $object_bidx,
+        search_tokens: $search_tokens,
+        knowledge_ct: $knowledge_ct,
+        wrapped_dek: $wrapped_dek,
+        kid: $kid,
+        created_at: $now
+    }]->(o)
+)
+
+REMOVE s._write_lock
+
+WITH s, o, existing, is_duplicate, should_supersede
+OPTIONAL MATCH (s)-[res_r:FACT {id: CASE WHEN is_duplicate THEN existing.id ELSE $fact_id END, scope: $scope}]->(o)
+RETURN res_r.id AS fact_id,
+       res_r.status AS status,
+       existing.id AS superseded_id,
+       is_duplicate AS is_duplicate,
+       should_supersede AS should_supersede
 """
 
 GET_ENCRYPTED_FACT_QUERY = """

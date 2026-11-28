@@ -28,6 +28,9 @@ ALLOWED_ENTITY_PROPS: FrozenSet[str] = frozenset({
     "name_ct",
     "wrapped_dek",
     "kid",
+    "profile_ct",
+    "profile_wrapped_dek",
+    "profile_kid",
     "created_at",
     "updated_at",
 })

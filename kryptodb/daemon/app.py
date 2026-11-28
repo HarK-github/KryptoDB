@@ -80,6 +80,7 @@ def wire_runtime_services(app: FastAPI, storage_mode: str) -> None:
 
 def _wire_plaintext_stack(app: FastAPI, memory_service: Any, retrieval_service: Any) -> None:
     """Wire Neo4jMemoryStore + PlaintextNeo4jRetriever into the service singletons."""
+    from kryptodb.core.memory.entity_resolution import EntityResolver
     from kryptodb.core.memory.entity_summarizer import EntitySummarizer
     from kryptodb.core.retrieval.hybrid_search import hybrid_search_engine
     from kryptodb.core.retrieval.ranking import path_reranker
@@ -97,8 +98,14 @@ def _wire_plaintext_stack(app: FastAPI, memory_service: Any, retrieval_service: 
         retrospective_query=RETROSPECTIVE_FACTS_QUERY,
     )
     summarizer = EntitySummarizer(storage_mode="plaintext")
+    resolver = EntityResolver()
 
-    memory_service.configure(store=store, client=neo4j_client, entity_summarizer=summarizer)
+    memory_service.configure(
+        store=store,
+        client=neo4j_client,
+        entity_summarizer=summarizer,
+        entity_resolver=resolver,
+    )
     retrieval_service.client = neo4j_client
     retrieval_service.retriever = retriever
 
@@ -152,8 +159,15 @@ def _wire_encrypted_stack(app: FastAPI, memory_service: Any, retrieval_service: 
     app.state.plaintext_scanner = scanner
 
     # Wire services: use enc_retrieval's Retriever-protocol search() method
+    from kryptodb.core.memory.entity_resolution import EntityResolver
     summarizer = EntitySummarizer(cipher=EnvelopeCipher(key_provider), storage_mode="encrypted")
-    memory_service.configure(store=enc_store, client=neo4j_client, entity_summarizer=summarizer)
+    resolver = EntityResolver()
+    memory_service.configure(
+        store=enc_store,
+        client=neo4j_client,
+        entity_summarizer=summarizer,
+        entity_resolver=resolver,
+    )
     retrieval_service.client = neo4j_client
     retrieval_service.retriever = enc_retrieval  # enc_retrieval.search() conforms to Retriever
     app.state.entity_summarizer = summarizer

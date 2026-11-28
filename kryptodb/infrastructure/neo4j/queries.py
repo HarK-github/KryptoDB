@@ -183,6 +183,24 @@ MATCH (s:Entity)-[r]->(o:Entity)
 RETURN r, s.name AS subject, o.name AS object, score
 """
 
+LIST_INCIDENT_FACTS_QUERY = """
+MATCH (s:Entity)-[r:FACT]-(o:Entity)
+WHERE (s.norm_name = $norm_subject OR o.norm_name = $norm_subject)
+  AND s.tenant_id = $tenant_id AND o.tenant_id = $tenant_id
+  AND {filter_clause}
+RETURN r, startNode(r).name AS subject, endNode(r).name AS object
+ORDER BY r.created_at DESC
+LIMIT $limit
+"""
+
+SAVE_ENTITY_PROFILE_QUERY = """
+MATCH (e:Entity {name: $entity_name, tenant_id: $tenant_id})
+SET e.profile_json = $profile_json,
+    e.updated_at = $now
+RETURN e.id AS id
+"""
+
+
 SEARCH_ENTITY_FULLTEXT_QUERY = """
 CALL db.index.fulltext.queryNodes('entity_name_ft', $query_text)
 YIELD node AS e, score

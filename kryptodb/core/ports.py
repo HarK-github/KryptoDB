@@ -121,6 +121,20 @@ class MemoryStore(Protocol):
     ) -> List[ScoredItem]:
         ...
 
+    def list_incident_facts(
+        self, subject: str, context: RequestContext, limit: int = 25
+    ) -> List[Dict[str, Any]]:
+        ...
+
+    def save_entity_profile(
+        self,
+        entity_id: str,
+        scope: str,
+        profile_payload: Dict[str, Any],
+        context: RequestContext,
+    ) -> None:
+        ...
+
     def find_entity(self, name: str, context: RequestContext) -> Optional[EntityRecord]:
         ...
 
