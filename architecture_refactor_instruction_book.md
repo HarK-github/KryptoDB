@@ -448,3 +448,36 @@ New untracked files: `kryptodb/infrastructure/embeddings/__init__.py`, `kryptodb
 
 #### 4. Explicit Blockers / Unexecuted Checks
 - **BLOCKED:** `tests/eval/test_memory_engine_e2e.py` (5 tests), Phase 2 live 50-thread concurrent Neo4j gate, and Phase 5/6 live `scripts/eval_ablations.py --storage-mode plaintext|encrypted` could not be executed because Docker/Neo4j is not running locally (`unix:///var/run/docker.sock: connect: no such file or directory`).
+
+---
+
+### Phase 6 — Final Documentation Sync & Clean Packaging
+
+#### 1. Diff Justification Table
+
+| Task ID | File Path | Lines Changed | Why This Change Was Required | Risk / Rollback Note |
+| :--- | :--- | :--- | :--- | :--- |
+| `T6.1` | `README.md` | L371-396 (+6/-5) | Synced package layout (`Retriever` protocol, `infrastructure/embeddings/`, `EntityResolver`/`EntitySummarizer`, 3-way `eval_ablations.py`). | Docs only. |
+| `T6.1` | `docs/ARCHITECTURE.md` | L62-88 (+7/-3), L162-167 (+4/-2) | Added `Retriever` protocol + `PlaintextNeo4jRetriever`/`EncryptedRetrievalService` to hexagonal diagram and documented `AliasArbiter` + `EntitySummarizer`. | Docs only. |
+| `T6.2` | `tests/conftest.py` | L4-25 (+21) | Wired Cypher query strings into `core/retrieval/` at pytest startup so unit tests run without `wire_runtime_services()`. | Test fixture only. |
+
+#### 2. Verbatim Command Outputs (Final Sweep)
+- `uv run lint-imports` (Exit 0):
+  ```
+  Analyzed 108 files, 362 dependencies.
+  Layered Architecture KEPT
+  Core isolation contract KEPT
+  Contracts: 2 kept, 0 broken.
+  ```
+- `KRYPTODB_ADMIN_API_KEY=test-admin-key uv run pytest -q --tb=short --ignore=tests/eval/test_memory_engine_e2e.py` (Exit 0):
+  ```
+  169 passed, 8 skipped, 2 warnings in 46.30s
+  ```
+- Static Isolation & Cleanliness Greps (Exit 0):
+  ```
+  CORE_CLEAN
+  SECRETS_DEMO_CLEAN
+  ```
+
+#### 4. Explicit Blockers / Unexecuted Checks
+- **BLOCKED:** Live Neo4j checks (`tests/eval/test_memory_engine_e2e.py` [5 tests], 50-thread concurrent `Cardinality.ONE` first-write test, and `scripts/eval_ablations.py` live plaintext/encrypted runs) require Docker / Neo4j on `localhost:7687`, which is unavailable in this environment (`dial unix /var/run/docker.sock: connect: no such file or directory`).
