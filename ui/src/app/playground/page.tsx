@@ -665,7 +665,7 @@ function AgentsView() {
         const r = await apiFetch('/admin/api-keys', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent_id: agentId, scopes: scopeList() })
+            body: JSON.stringify({ agent_id: agentId, tenant_id: 'default', role: 'writer', scopes: scopeList() })
         })
         const data = await r.json()
         setNotice(r.ok ? `New API Key issued: ${data.api_key}` : (data.detail || 'Could not create key.'))
@@ -858,7 +858,7 @@ function ConfigView() {
             <div className="panel settings-panel" style={{ marginBottom: 16 }}>
                 <div className="panel-title"><span><Settings2 size={15} /> GraphRAG Engine Runtime Controls</span></div>
                 <div className="toggle-row">
-                    <div><strong>Plaintext Neo4j Storage</strong><span>Nodes &amp; edges stored unencrypted for native vector &amp; fulltext index speed</span></div>
+                    <div><strong>Storage Mode (Live /health)</strong><span>Configured via KRYPTODB_STORAGE_MODE (plaintext or AES-256-GCM encrypted) with background PlaintextAuditScanner</span></div>
                     <button className="toggle on" disabled><span /></button>
                 </div>
                 <div className="toggle-row">
@@ -988,7 +988,13 @@ function AuditView() {
 /* McpView                                                                  */
 /* ========================================================================= */
 function McpView() {
-    const [agent, setAgent] = useState('Agent-1')
+    const [agent, setAgent] = useState('')
+    const [apiKey, setApiKey] = useState('')
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            setApiKey(window.localStorage.getItem('kryptodb_api_key') || '')
+        }
+    }, [])
     const [copied, setCopied] = useState(false)
     const [status, setStatus] = useState('idle')
     const [fetchedAgents, setFetchedAgents] = useState<any[]>([])
@@ -1004,7 +1010,7 @@ function McpView() {
             .catch(() => {})
     }, [])
 
-    const config = `{"mcpServers":{"kryptodb":{"command":"uv","args":["run","kryptodb-mcp"],"env":{"AGENT_ID":"${agent}","KRYPTODB_API_KEY":"${apiKey || '<YOUR_API_KEY>'}","KRYPTODB_URL":"${API_BASE}"}}}}`
+    const config = `{"mcpServers":{"kryptodb":{"command":"uv","args":["run","python","-m","kryptodb.interfaces.mcp.server"],"env":{"AGENT_ID":"${agent}","KRYPTODB_API_KEY":"${apiKey || '<YOUR_API_KEY>'}","NEO4J_URI":"bolt://localhost:7687"}}}}`
     const copy = () => { navigator.clipboard?.writeText(config); setCopied(true); setTimeout(() => setCopied(false), 1500) }
     const test = async () => { setStatus('connecting'); try { const response = await apiFetch('/health'); setStatus(response.ok ? 'connected' : 'error'); } catch { setStatus('error') } }
 
@@ -1080,7 +1086,7 @@ function CommandPalette({ onClose, onNavigate, onNodeSelect }: { onClose: () => 
     const [nodes, setNodes] = useState<any[]>([])
 
     useEffect(() => {
-        apiFetch('/graph/snapshot?agent_id=admin')
+        apiFetch('/graph/snapshot')
             .then(res => res.ok ? res.json() : { nodes: [], edges: [] })
             .then(data => {
                 if (!data.nodes || !data.edges) return

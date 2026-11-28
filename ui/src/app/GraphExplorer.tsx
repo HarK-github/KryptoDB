@@ -24,8 +24,8 @@ import { Maximize2, Plus, RefreshCw, Filter, ChevronDown } from "lucide-react";
 const API_BASE = process.env.NEXT_PUBLIC_KRYPTODB_URL || (typeof window !== 'undefined' ? `http://${window.location.hostname}:8000` : "http://127.0.0.1:8000");
 
 const getScopeColor = (scope: string) => {
-  if (!scope) return "#888888";
-  const colors = ["#ef4444", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899"];
+  if (!scope) return "#6B707A";
+  const colors = ["#1B4D5C", "#3D6B59", "#7A4E2D", "#6B707A", "#1E7A56", "#9E2A2B"];
   const index = Math.abs(scope.split("").reduce((a, b) => a + b.charCodeAt(0), 0)) % colors.length;
   return colors[index];
 };
@@ -91,7 +91,7 @@ export default function LiveGraph({ selected, onSelect, activeTraversal }: any) 
       const y = srcPos.y + (tgtPos.y - srcPos.y) * eased;
       ctx.beginPath();
       ctx.arc(x, y, 4, 0, 2 * Math.PI);
-      ctx.fillStyle = '#f8fafc';
+      ctx.fillStyle = '#1B4D5C';
       ctx.fill();
     });
   }, [graph]);
@@ -177,9 +177,9 @@ export default function LiveGraph({ selected, onSelect, activeTraversal }: any) 
 
     const sigma = new Sigma(graph, containerRef.current, {
       renderEdgeLabels: false,
-      defaultEdgeColor: "#888888",
+      defaultEdgeColor: "rgba(22, 24, 29, 0.22)",
       allowInvalidContainer: true,
-      labelColor: { color: "#f8fafc" },
+      labelColor: { color: "#16181D" },
     });
     sigmaRef.current = sigma;
 
@@ -187,7 +187,7 @@ export default function LiveGraph({ selected, onSelect, activeTraversal }: any) 
       const res = { ...data };
       const isSelected = selectedRef.current?.id === node;
       if (isSelected) {
-        res.color = "#ffffff";
+        res.color = "#1B4D5C";
         res.size = (res.size || 6) * 1.3;
       }
       return res;
@@ -196,7 +196,7 @@ export default function LiveGraph({ selected, onSelect, activeTraversal }: any) 
     sigma.setSetting("edgeReducer", (edge, data) => {
       const res = { ...data };
       if (data.status === "superseded" || data.status === "revoked" || data.historical) {
-        res.color = "#475569";
+        res.color = "rgba(22, 24, 29, 0.14)";
         res.size = 1;
       } else {
         res.color = getScopeColor(data.scope);

@@ -66,7 +66,7 @@ async def get_graph_snapshot(
                     "type": record["kind"] or "Entity",
                     "tenant_id": record["tenant_id"],
                     "embedding_status": "384-dim (Cosine)" if record["has_embedding"] else "Pending",
-                    "is_encrypted": False,
+                    "is_encrypted": os.getenv("KRYPTODB_STORAGE_MODE", "plaintext").lower() == "encrypted",
                 })
 
             edges_query = GRAPH_SNAPSHOT_EDGES_QUERY.replace("{filter_clause}", edge_filter)
@@ -86,7 +86,7 @@ async def get_graph_snapshot(
                     "status": record["status"] or "active",
                     "valid_from": str(record["valid_from"]) if record["valid_from"] else None,
                     "valid_until": str(record["valid_until"]) if record["valid_until"] else None,
-                    "is_encrypted": False,
+                    "is_encrypted": os.getenv("KRYPTODB_STORAGE_MODE", "plaintext").lower() == "encrypted",
                 })
     except Exception as exc:
         logger.warning("Error fetching Neo4j graph snapshot: %s", exc)

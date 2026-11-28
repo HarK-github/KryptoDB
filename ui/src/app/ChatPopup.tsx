@@ -61,7 +61,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
     const [agentsError, setAgentsError] = useState('')
     const [messages, setMessages] = useState<ChatItem[]>([])
 
-    const [selectedAgent, setSelectedAgent] = useState('campus-bot')
+    const [selectedAgent, setSelectedAgent] = useState('')
 
     useEffect(() => {
         if (typeof window !== 'undefined') {
@@ -103,8 +103,13 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
 
     useEffect(() => {
         if (!threadId) return
+        const apiKey = typeof window !== 'undefined' ? (window.localStorage.getItem('kryptodb_api_key') || '') : ''
+        if (!apiKey) {
+            setWsStatus('disconnected')
+            return
+        }
         setWsStatus('connecting')
-        const wsUrl = `${API_BASE.replace(/^http/, 'ws')}/chat/${threadId}/stream`
+        const wsUrl = `${API_BASE.replace(/^http/, 'ws')}/chat/${threadId}/stream?token=${encodeURIComponent(apiKey)}`
         const ws = new WebSocket(wsUrl)
         wsRef.current = ws
 
@@ -128,6 +133,11 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
         
         ws.onmessage = (e) => {
             const data = JSON.parse(e.data)
+            if (data.type === "denied") {
+                setMessages(prev => [...prev, { id: String(Date.now()) + Math.random(), role: 'agent', text: `Access denied: ${data.reason || data.detail || 'Unauthorized'}` }])
+                setIsSending(false)
+                return
+            }
             console.log("WebSocket message received:", data)
             if (data.type === 'agent_status') {
                 setMessages(prev => {
@@ -548,7 +558,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
 
     const handleSystemClick = (nodeId?: string) => {
         if (nodeId && onSelectNode) {
-            onSelectNode({ id: nodeId, label: nodeId === 'n4' ? 'Agent-1' : nodeId === 'n7' ? 'AES-256-GCM' : 'kryptodb', scope: 'research', kind: 'agent' })
+            onSelectNode({ id: nodeId, label: nodeId })
         }
     }
 
@@ -640,7 +650,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                         <button className="close-picker-btn" onClick={() => setShowScopePicker(false)}><X size={14} /></button>
                     </div>
                     <div className="model-picker-sub">
-                        LangGraph autonomously selects and queries the relevant memory partitions based on context.
+                        LangGraph autonomously selects and queries the relevant authorized scopes based on context.
                     </div>
                     <div className="model-picker-list">
                         {availableScopes.map(s => (
@@ -651,7 +661,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
                             >
                                 <div className="model-info">
                                     <span className="model-name">{s === 'AUTO' ? 'Auto (Autonomous LangGraph Routing)' : s}</span>
-                                    <span className="model-tag">{s === 'AUTO' ? 'LangGraph AI' : 'Partition Scope'}</span>
+                                    <span className="model-tag">{s === 'AUTO' ? 'LangGraph AI' : 'Scope'}</span>
                                 </div>
                                 {currentScope === s && <Check size={14} className="check-icon" />}
                             </button>

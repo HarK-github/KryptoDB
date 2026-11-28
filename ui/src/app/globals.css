@@ -1,14 +1,42 @@
+:root {
+  color-scheme: light;
+  --paper: #F6F5F1;
+  --background: #F6F5F1;
+  --foreground: #16181D;
+  --ink: #16181D;
+  --surface: #ECEAE3;
+  --card: #FBFBF8;
+  --card-foreground: #16181D;
+  --popover: #FBFBF8;
+  --popover-foreground: #16181D;
+  --sidebar: #EFECE4;
+  --sidebar-foreground: #2A2D34;
+  --primary: #1B4D5C;
+  --accent: #1B4D5C;
+  --primary-foreground: #FFFFFF;
+  --on-accent: #FFFFFF;
+  --secondary: #E6E3DA;
+  --secondary-foreground: #16181D;
+  --muted: #E6E3DA;
+  --muted-foreground: #52565E;
+  --destructive: #9E2A2B;
+  --border: rgba(22, 24, 29, 0.14);
+  --input: rgba(22, 24, 29, 0.20);
+  --ring: #1B4D5C;
+  --radius: 2px;
+}
+
 @import 'tailwindcss';
 
 :root {
   color-scheme: dark;
-  --background: #090a0d;
+  --background: var(--paper);
   --foreground: #e8e8ed;
   --card: #121419;
   --card-foreground: #e8e8ed;
   --popover: #181a21;
   --popover-foreground: #e8e8ed;
-  --primary: #2dd4bf;
+  --primary: var(--accent);
   --primary-foreground: #071311;
   --secondary: #1b1d24;
   --secondary-foreground: #d9dbe4;
@@ -19,9 +47,9 @@
   --destructive: #ff6b6b;
   --border: rgba(255, 255, 255, .09);
   --input: rgba(255, 255, 255, .12);
-  --ring: #2dd4bf;
+  --ring: var(--accent);
   --radius: .7rem;
-  --sidebar: #0d0e12;
+  --sidebar: var(--surface);
   --sidebar-foreground: #d5d6dc;
 }
 
@@ -86,7 +114,7 @@ button {
   min-height: 100vh;
   padding: 22px 14px 15px;
   border-right: 1px solid var(--border);
-  background: #0d0e12;
+  background: var(--surface);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -123,7 +151,7 @@ button {
 .workspace button, .workspace-value {
   width: 100%;
   border: 1px solid var(--border);
-  background: #14161b; 
+  background: var(--card); 
   color: #d9dbe4;
   padding: 9px 10px;
   border-radius: 6px;
@@ -180,7 +208,7 @@ nav button,
 nav button:hover,
 .sidebar-bottom>button:hover,
 nav button.active {
-  color: #eeeef2;
+  color: var(--ink);
   background: #1a1c23;
 }
 
@@ -255,7 +283,7 @@ nav button.active {}
   gap: 14px;
   padding: 0 31px;
   border-bottom: 1px solid var(--border);
-  background: #0d0e12;
+  background: var(--surface);
 }
 
 .global-search {
@@ -319,8 +347,8 @@ nav button.active {}
 
 .ui-button {
   border: 1px solid var(--border);
-  color: #bfc1ca;
-  background: #17191f; 
+  color: var(--muted-foreground);
+  background: var(--surface); 
   min-height: 32px;
   padding: 0 10px;
   border-radius: 7px;
@@ -444,7 +472,7 @@ h1 {
 .panel,
 .infra-card {
   border: 1px solid var(--border);
-  background: #101217; 
+  background: var(--card); 
   border-radius: 10px;
   overflow: hidden;
 }
@@ -457,7 +485,7 @@ h1 {
   z-index: 10;
   max-height: calc(100% - 20px);
   overflow-y: auto;
-  background: #101217;
+  background: var(--card);
   
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
   border: 1px solid var(--border);
@@ -467,7 +495,7 @@ h1 {
 .graph-wrap {
   height: 100%;
   position: relative;
-  background: #0e1015; 
+  background: var(--surface); 
   border: none;
   border-top: 1px solid var(--border);
   border-radius: 0;
@@ -488,12 +516,12 @@ h1 {
 .active-edge {
   stroke: url(#edgeGradient);
   stroke-width: 2;
-  filter: url(#nodeGlow);
+  
 }
 
 .traveler {
   fill: #fff;
-  filter: url(#nodeGlow);
+  
   animation: travel 2.8s infinite ease-in-out;
 }
 
@@ -522,7 +550,7 @@ h1 {
 }
 
 .node-dot {
-  fill: #2dd4bf;
+  fill: var(--accent);
   stroke: #0b2322;
   stroke-width: 4;
 }
@@ -545,7 +573,7 @@ h1 {
 .graph-node.selected .node-halo {
   stroke: #fff;
   stroke-width: 1.5;
-  filter: url(#nodeGlow);
+  
 }
 
 .graph-node.selected .node-dot {
@@ -579,7 +607,7 @@ h1 {
   align-items: center;
   gap: 6px;
   border: 1px solid var(--border);
-  background: #17191f; 
+  background: var(--surface); 
   padding: 0 8px;
   border-radius: 7px;
   color: #a3a6b1;
@@ -793,13 +821,7 @@ select {
   font-size: 10px;
 }
 
-.locked-card {
-  border: 1px solid rgba(255, 255, 255, .08);
-  background: rgba(255, 255, 255, .025);
-  border-radius: 8px;
-  padding: 14px;
-  color: #8b8e9a;
-}
+
 
 .locked-card p {
   font-size: 11px;
@@ -1285,7 +1307,7 @@ select {
 .filter-row select,
 .agent-select {
   border: 1px solid var(--border);
-  background: #17191f; 
+  background: var(--surface); 
   color: #aaaeb9;
   border-radius: 7px;
   padding: 8px 10px;
@@ -1755,7 +1777,7 @@ h1 {
 .graph-wrap {
   border: 0;
   border-radius: 0;
-  background: #0e1015;
+  background: var(--surface);
 }
 
 .graph-glow {
@@ -2215,7 +2237,7 @@ h1 {
 }
 
 .empty-chat-icon {
-  color: #2dd4bf;
+  color: var(--accent);
   margin-bottom: 8px;
   opacity: 0.85;
 }
@@ -2292,7 +2314,7 @@ h1 {
 }
 
 .inline-narration.recalled {
-  border-left-color: #2dd4bf;
+  border-left-color: var(--accent);
 }
 
 .inline-narration.denied {
@@ -2427,11 +2449,11 @@ h1 {
 }
 
 .chat-input-bar input:focus {
-  border-color: #2dd4bf;
+  border-color: var(--accent);
 }
 
 .send-btn {
-  background: #2dd4bf;
+  background: var(--accent);
   color: #0b0c10;
   border: none;
   border-radius: 6px;
@@ -2621,7 +2643,7 @@ h1 {
 }
 
 .check-icon {
-  color: #2dd4bf;
+  color: var(--accent);
 }
 
 /* --- KryptoDB Plaintext GraphRAG Additions --- */
@@ -2729,7 +2751,7 @@ h1 {
 
 .attribution-card.active {
   background: rgba(45, 212, 191, 0.1);
-  border-color: #2dd4bf;
+  border-color: var(--accent);
 }
 
 .attribution-card-top {
@@ -2757,7 +2779,7 @@ h1 {
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(45, 212, 191, 0.15);
-  color: #2dd4bf;
+  color: var(--accent);
   border: 1px solid rgba(45, 212, 191, 0.3);
 }
 
@@ -2778,7 +2800,7 @@ h1 {
 }
 
 .provenance-arrow {
-  color: #2dd4bf;
+  color: var(--accent);
   font-weight: bold;
 }
 
@@ -2815,7 +2837,7 @@ h1 {
 
 .benchmark-card-sub {
   font-size: 11px;
-  color: #2dd4bf;
+  color: var(--accent);
 }
 
 .cardinality-badge {
