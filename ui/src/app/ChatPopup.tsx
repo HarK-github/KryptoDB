@@ -119,7 +119,7 @@ export default function AgentActivityModal({ onClose, onSelectNode }: { onClose:
             setIsSending(false)
         }
         ws.onerror = (err) => {
-            console.error("WebSocket error:", err)
+            console.warn("WebSocket connection error:", err)
             setIsSending(false)
         }
         ws.onclose = () => {
