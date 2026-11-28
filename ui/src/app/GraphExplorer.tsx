@@ -280,7 +280,7 @@ export default function LiveGraph({ selected, onSelect, activeTraversal }: any) 
           <button className="ui-button" title="Re-layout" onClick={runLayout}><RefreshCw size={14} /> <span className="hide-sm">Relayout</span></button>
       </div>
       
-      <div ref={containerRef} style={{ position: 'absolute', top: 38, bottom: 42, left: 0, right: 0, overflow: 'hidden', zIndex: 1 }} />
+      <div ref={containerRef} style={{ position: 'absolute', top: 38, bottom: 42, left: 0, right: 0, overflow: 'hidden', zIndex: 1, backgroundColor: '#F2F0E8' }} />
       <canvas ref={overlayRef} style={{ position: 'absolute', top: 38, bottom: 42, left: 0, right: 0, zIndex: 2, pointerEvents: 'none' }} />
 
       <div className="graph-legend">
