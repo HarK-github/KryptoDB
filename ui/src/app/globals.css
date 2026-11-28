@@ -186,7 +186,7 @@ nav button:hover,
 .sidebar-bottom>button:hover,
 nav button.active {
   color: var(--ink);
-  background: #1a1c23;
+  background: var(--card);
 }
 
 nav button.active {}
@@ -268,7 +268,7 @@ nav button.active {}
   align-items: center;
   gap: 10px;
   color: #8b8e9a;
-  background: #111318; 
+  background: var(--card); 
   border: 1px solid var(--border);
   border-radius: 8px;
   height: 34px;
@@ -281,7 +281,7 @@ nav button.active {}
 }
 
 .global-search:hover {
-  background: #181b21;
+  background: var(--card);
   border-color: #3b3e46;
 }
 
@@ -341,7 +341,7 @@ nav button.active {}
 .ui-button:hover {
   color: var(--ink);
   border-color: var(--border);
-  background: #20232b;
+  background: var(--card);
 }
 
 .ui-button.primary {
@@ -464,7 +464,7 @@ h1 {
   overflow-y: auto;
   background: var(--card);
   
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 20px var(--card);
   border: 1px solid var(--border);
   border-radius: 10px;
 }
@@ -663,7 +663,7 @@ select {
   gap: 6px;
   padding: 4px 7px;
   border-radius: 5px;
-  background: #191b21;
+  background: var(--card);
   color: #9fa2ae;
   border: 1px solid var(--surface);
   font: 10px 'IBM Plex Mono';
@@ -703,7 +703,7 @@ select {
 .inspector {
   padding: 19px;
   min-height: 535px;
-  background: #121419; 
+  background: var(--card); 
 }
 
 .empty-inspector {
@@ -834,7 +834,7 @@ select {
   margin-bottom: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #111318; 
+  background: var(--card); 
 }
 
 .stats-strip>div {
@@ -874,7 +874,7 @@ select {
 }
 
 .panel {
-  background: #111318; 
+  background: var(--card); 
 }
 
 .live-agents-panel {
@@ -1183,7 +1183,7 @@ select {
   border: 0;
   border-radius: 20px;
   padding: 2px;
-  background: #272a32;
+  background: var(--card);
 }
 
 .toggle span {
@@ -1512,7 +1512,7 @@ select {
   position: relative;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #090b0f;
+  background: var(--card);
   padding: 17px;
 }
 
@@ -1608,7 +1608,7 @@ select {
   width: min(590px, calc(100vw - 32px));
   overflow: hidden;
   border: 1px solid var(--border);
-  background: #171920;
+  background: var(--card);
   border-radius: 11px;
 }
 
@@ -1654,7 +1654,7 @@ select {
 }
 
 .palette-item:hover {
-  background: #22252e;
+  background: var(--card);
 }
 
 .palette-icon {
@@ -1663,7 +1663,7 @@ select {
   border-radius: 6px;
   display: grid;
   place-items: center;
-  background: #252934;
+  background: var(--card);
   color: var(--primary);
 }
 
@@ -2008,7 +2008,7 @@ h1 {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 14px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65), 0 0 0 1px var(--surface);
+  box-shadow: 0 16px 48px var(--card), 0 0 0 1px var(--surface);
   z-index: 999;
   display: flex;
   flex-direction: column;
@@ -2025,7 +2025,7 @@ h1 {
   cursor: grabbing !important;
   user-select: none;
   opacity: 0.95;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(45, 212, 191, 0.3);
+  box-shadow: 0 24px 64px var(--card), 0 0 0 1px rgba(45, 212, 191, 0.3);
 }
 
 /* Resize Handles */
@@ -2109,7 +2109,7 @@ h1 {
   gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--surface);
-  background: #12151c;
+  background: var(--card);
   cursor: grab;
   user-select: none;
 }
@@ -2200,7 +2200,7 @@ h1 {
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
-  background: #0b0c10;
+  background: var(--card);
 }
 
 .empty-chat-state {
@@ -2258,14 +2258,14 @@ h1 {
 }
 
 .chat-bubble.user-bubble {
-  background: #1e293b;
+  background: var(--card);
   color: #f1f5f9;
   border: 1px solid var(--surface);
   border-bottom-right-radius: 3px;
 }
 
 .chat-bubble.agent-bubble {
-  background: #141721;
+  background: var(--card);
   color: #d1d5db;
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-bottom-left-radius: 3px;
@@ -2407,7 +2407,7 @@ h1 {
 .chat-input-bar {
   padding: 8px 10px;
   border-top: 1px solid var(--surface);
-  background: #12151c;
+  background: var(--card);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2503,11 +2503,11 @@ h1 {
   top: 75px;
   left: 10px;
   right: 10px;
-  background: #141722;
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 12px 32px var(--card);
   z-index: 1001;
   animation: modelPickerIn 0.18s ease-out;
   max-height: 280px;
@@ -2641,7 +2641,7 @@ h1 {
   align-items: center;
   gap: 8px;
   flex: 1;
-  background: rgba(10, 12, 18, 0.6);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 12px;
@@ -2667,7 +2667,7 @@ h1 {
 }
 
 .graph-search-controls select {
-  background: rgba(10, 12, 18, 0.6);
+  background: var(--card);
   border: 1px solid var(--border);
   color: #e2e8f0;
   font-size: 12px;
@@ -2682,13 +2682,13 @@ h1 {
   left: 0;
   right: 0;
   max-height: 280px;
-  background: rgba(13, 16, 26, 0.95);
+  background: var(--card);
   backdrop-filter: blur(16px);
   border-top: 1px solid var(--border);
   z-index: 20;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 -8px 24px var(--card);
 }
 
 .attribution-drawer-head {
@@ -2842,7 +2842,7 @@ h1 {
 .propose-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.75);
+  background: var(--card);
   backdrop-filter: blur(8px);
   z-index: 100;
   display: flex;
@@ -2854,10 +2854,10 @@ h1 {
 .propose-modal {
   width: 100%;
   max-width: 520px;
-  background: #111420;
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 16px 40px var(--card);
   display: flex;
   flex-direction: column;
 }
@@ -2891,7 +2891,7 @@ h1 {
 
 .propose-form-row input,
 .propose-form-row select {
-  background: #161b2b;
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 12px;
@@ -2916,3 +2916,14 @@ h1 {
 
 
 .graph-canvas { position: relative; min-height: 540px; height: 100%; background: #F2F0E8; }
+
+.nav-item.active, .sidebar-item.active {
+  background: var(--card) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--border) !important;
+}
+.cmd-palette, .command-palette, .modal-card, .search-pill, .query-bar, .query-input, .select-pill {
+  background: var(--card) !important;
+  color: var(--ink) !important;
+  border-color: var(--border) !important;
+}
