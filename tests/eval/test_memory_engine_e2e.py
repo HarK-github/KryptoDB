@@ -116,7 +116,8 @@ def test_eval_cardinality_invariants():
 
     assert predicate_registry.get_cardinality("EXHIBITS") == Cardinality.MANY
     assert predicate_registry.get_cardinality("STORED_FACT") == Cardinality.MANY
-    assert predicate_registry.get_cardinality("WORKS_FOR") == Cardinality.MANY
+    assert predicate_registry.get_cardinality("MEMBER_OF") == Cardinality.MANY
+    assert predicate_registry.get_cardinality("WORKS_FOR") == Cardinality.ONE
 
 
 def test_eval_provenance_and_directional_precision():
